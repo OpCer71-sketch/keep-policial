@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Keep Policial</string>
+
+    <string name="termo_titulo">Termo de Compromisso de Manutenção de Sigilo</string>
+    <string name="termo_texto">Declaro, para todos os fins, que:
+\n\n1. Este aplicativo é de USO EXCLUSIVO E INTERNO da corporação, destinado ao apoio à identificação de indivíduos de interesse da segurança pública na área do destacamento.
+\n\n2. As informações aqui registradas (dados pessoais, fotografias, filiação, endereços, passagens policiais e números de REDS) são SIGILOSAS e de acesso restrito, e somente podem ser consultadas em razão do serviço.
+\n\n3. Comprometo-me a NÃO revelar, copiar, fotografar a tela, compartilhar, encaminhar por aplicativos de mensagem, redes sociais ou qualquer outro meio, total ou parcialmente, as informações acessadas, nem permitir o acesso de terceiros às minhas credenciais.
+\n\n4. Estou ciente de que meu login é pessoal e intransferível e de que todos os acessos, consultas, inclusões, alterações e exclusões ficam registrados no servidor do destacamento, com identificação do usuário, data e hora.
+\n\n5. Utilizarei os dados apenas para finalidade legítima de segurança pública, observando a necessidade, a proporcionalidade e a veracidade das informações, e comunicarei imediatamente ao comandante qualquer perda do aparelho, suspeita de acesso indevido ou vazamento.
+\n\n6. Estou ciente de que a violação deste compromisso pode configurar infração disciplinar e crime de violação de sigilo funcional (art. 326 do Código Penal Militar e art. 325 do Código Penal), sem prejuízo das responsabilidades civis e administrativas, inclusive as previstas na Lei nº 12.527/2011 (Lei de Acesso à Informação) e na Lei nº 13.709/2018 (LGPD).
+\n\nAo marcar a opção abaixo e entrar, declaro que li, compreendi e aceito integralmente este termo. O aceite é registrado no servidor a cada acesso.</string>
+</resources>

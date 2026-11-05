@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primaria">#1B2A4A</color>
+    <color name="primaria_escura">#111C33</color>
+    <color name="destaque">#C9A227</color>
+    <color name="fundo">#ECEFF4</color>
+    <color name="cartao">#FFFFFF</color>
+    <color name="borda">#D5DAE3</color>
+    <color name="texto">#1A1F2B</color>
+    <color name="texto_suave">#5B6475</color>
+    <color name="obediente">#2E7D32</color>
+    <color name="resistente_passivo">#E65100</color>
+    <color name="resistente_ativo">#C62828</color>
+</resources>

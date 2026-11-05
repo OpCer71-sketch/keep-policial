@@ -1,0 +1,27 @@
+# Gradle / Android Studio
+android/.gradle/
+android/local.properties
+android/.idea/
+*.iml
+build/
+.gradle/
+
+# Binarios: o APK vai nas "Releases" do GitHub
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Dados do servidor (nunca publicar fichas, fotos, banco ou certificado)
+*.db
+*.db-wal
+*.db-shm
+*.pem
+config.json
+fotos/
+backups/
+
+# Sistema
+.DS_Store
+Thumbs.db
+__pycache__/

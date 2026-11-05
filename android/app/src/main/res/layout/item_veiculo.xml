@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="10dp"
+    android:background="@drawable/bg_foto_add"
+    android:orientation="vertical"
+    android:padding="10dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/etPlaca"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1.2"
+            android:hint="Placa (ABC1D23)"
+            android:importantForAutofill="no"
+            android:inputType="textNoSuggestions|textCapCharacters"
+            android:maxLength="8"
+            android:textSize="15sp" />
+
+        <AutoCompleteTextView
+            android:id="@+id/etCor"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:completionThreshold="1"
+            android:hint="Cor"
+            android:importantForAutofill="no"
+            android:inputType="textCapSentences|textNoSuggestions"
+            android:maxLength="30"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/btnRemover"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:gravity="center"
+            android:text="✕"
+            android:textColor="@color/resistente_ativo"
+            android:textSize="18sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <AutoCompleteTextView
+            android:id="@+id/etMarca"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:completionThreshold="1"
+            android:hint="Marca"
+            android:importantForAutofill="no"
+            android:inputType="textCapWords|textNoSuggestions"
+            android:maxLength="40"
+            android:textSize="15sp" />
+
+        <EditText
+            android:id="@+id/etModelo"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1.2"
+            android:hint="Modelo (ex.: Gol, CG 160)"
+            android:importantForAutofill="no"
+            android:inputType="textCapWords|textNoSuggestions"
+            android:maxLength="60"
+            android:textSize="15sp" />
+    </LinearLayout>
+</LinearLayout>
