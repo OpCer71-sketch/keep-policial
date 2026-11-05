@@ -9,6 +9,7 @@ build/
 # Binarios: o APK vai nas "Releases" do GitHub
 *.apk
 *.aab
+*.zip
 *.keystore
 *.jks
 
