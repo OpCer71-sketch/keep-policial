@@ -10,19 +10,41 @@ android {
         applicationId 'com.keeppolicial.app'
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName '2.0'
+        versionCode 3
+        versionName '3.0'
     }
 
     buildFeatures {
         buildConfig true
     }
 
+    // Chave definitiva do app (a partir da 3.0). Fica FORA do repositório, em
+    // ~/.keeppolicial/assinatura.properties (ou no caminho da variável KEEP_ASSINATURA).
+    // Toda versão tem de ser assinada com ela, senão os celulares não aceitam a
+    // atualização automática. Guarde cópias do .jks e do .properties.
+    def arqAssinatura = new File(System.getenv('KEEP_ASSINATURA')
+            ?: System.getProperty('user.home') + '/.keeppolicial/assinatura.properties')
+    signingConfigs {
+        if (arqAssinatura.exists()) {
+            definitiva {
+                def p = new Properties()
+                arqAssinatura.withInputStream { p.load(it) }
+                storeFile file(p['storeFile'])
+                storePassword p['storePassword']
+                keyAlias p['keyAlias']
+                keyPassword p['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            // Assinado com a chave de depuração para instalação direta (sem loja).
-            signingConfig signingConfigs.debug
+            if (!arqAssinatura.exists()) {
+                throw new GradleException("Chave de assinatura não encontrada: " + arqAssinatura +
+                        ". Restaure a cópia de segurança (veja COMO_INSTALAR.md).")
+            }
+            signingConfig signingConfigs.definitiva
         }
     }
 

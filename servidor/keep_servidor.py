@@ -38,12 +38,14 @@ import threading
 import time
 import traceback
 import unicodedata
+import urllib.error
+import urllib.request
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSAO = "2.0.0"
+VERSAO = "3.0.0"
 DADOS = os.environ.get("KEEP_DADOS", "/var/lib/keeppolicial")
 
 ARQ_CONFIG = "config.json"
@@ -51,6 +53,23 @@ ARQ_DB = "keep.db"
 DIR_FOTOS = "fotos"
 ARQ_CERT = "certificado.pem"
 ARQ_CHAVE = "chave.pem"
+
+# Atualizacao automatica a partir das "Releases" do repositorio no GitHub.
+REPO_GITHUB = "OpCer71-sketch/keep-policial"
+URL_RELEASE = "https://api.github.com/repos/%s/releases/latest" % REPO_GITHUB
+ASSET_SERVIDOR = "keep_servidor.py"
+ASSET_SOMAS = "SHA256SUMS"
+DIR_ATUALIZACAO = "atualizacao"
+ARQ_ESTADO_ATUALIZACAO = "estado.json"
+# Pedido de instalacao: o servico "keeppolicial-atualizar.path" (root) vigia
+# este arquivo e instala a versao baixada, reiniciando o servidor.
+ARQ_PEDIDO_INSTALACAO = "INSTALAR"
+ARQ_RESULTADO_INSTALACAO = "resultado.json"
+MAX_BYTES_ATUALIZACAO = 5 * 1024 * 1024
+
+# Avisos do administrador (pop-up no aplicativo)
+LIMITE_TITULO_AVISO = 80
+LIMITE_MENSAGEM_AVISO = 1500
 
 CONFIG_PADRAO = {
     "nome_destacamento": "Destacamento PM",
@@ -271,6 +290,20 @@ CREATE TABLE IF NOT EXISTS veiculos (
     cor TEXT NOT NULL DEFAULT '',
     placa TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS avisos (
+    id INTEGER PRIMARY KEY,
+    titulo TEXT NOT NULL,
+    mensagem TEXT NOT NULL,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_por TEXT,
+    criado_em TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS avisos_ciencia (
+    aviso_id INTEGER NOT NULL,
+    usuario TEXT NOT NULL,
+    em TEXT NOT NULL,
+    PRIMARY KEY (aviso_id, usuario)
+);
 CREATE INDEX IF NOT EXISTS ix_passagens ON passagens(suspeito_id);
 CREATE INDEX IF NOT EXISTS ix_veiculos ON veiculos(suspeito_id);
 CREATE INDEX IF NOT EXISTS ix_fotos ON fotos(suspeito_id);
@@ -443,6 +476,183 @@ def op_remover_usuario(db, uid, autor, ip="local"):
     return u["usuario"]
 
 
+# -- avisos do administrador (pop-up no app) ---------------------------------
+
+def op_publicar_aviso(db, titulo, mensagem, autor, ip="local"):
+    titulo = (titulo or "").strip()
+    mensagem = (mensagem or "").replace("\r\n", "\n").strip()
+    if not mensagem:
+        raise ValueError("Escreva a mensagem do aviso.")
+    if len(titulo) > LIMITE_TITULO_AVISO:
+        raise ValueError("O título deve ter no máximo %d caracteres." % LIMITE_TITULO_AVISO)
+    if len(mensagem) > LIMITE_MENSAGEM_AVISO:
+        raise ValueError("A mensagem deve ter no máximo %d caracteres." % LIMITE_MENSAGEM_AVISO)
+    titulo = titulo or "Aviso do comando"
+    cur = db.execute("INSERT INTO avisos (titulo, mensagem, ativo, criado_por, criado_em) "
+                     "VALUES (?,?,1,?,?)", (titulo, mensagem, autor, agora_iso()))
+    auditar(db, autor, ip, "PUBLICAR_AVISO", "%d (%s)" % (cur.lastrowid, titulo))
+    db.commit()
+    return cur.lastrowid
+
+
+def op_definir_aviso_ativo(db, aid, ativo, autor, ip="local"):
+    a = db.execute("SELECT * FROM avisos WHERE id = ?", (aid,)).fetchone()
+    if not a:
+        raise ValueError("Aviso não encontrado.")
+    db.execute("UPDATE avisos SET ativo=? WHERE id=?", (1 if ativo else 0, aid))
+    auditar(db, autor, ip, "REATIVAR_AVISO" if ativo else "ENCERRAR_AVISO",
+            "%d (%s)" % (aid, a["titulo"]))
+    db.commit()
+    return a["titulo"]
+
+
+# -- atualizacao do servidor pelo GitHub --------------------------------------
+
+def versao_tupla(texto):
+    """'v3.0' / '3.0.0' -> (3, 0, 0). Sem numeros -> (0,)."""
+    nums = [int(n) for n in re.findall(r"\d+", str(texto or ""))[:4]]
+    while len(nums) < 3:
+        nums.append(0)
+    return tuple(nums)
+
+
+def _dir_atualizacao(*partes):
+    return caminho(DIR_ATUALIZACAO, *partes)
+
+
+def estado_atualizacao():
+    try:
+        with open(_dir_atualizacao(ARQ_ESTADO_ATUALIZACAO), encoding="utf-8") as f:
+            est = json.load(f)
+    except (FileNotFoundError, ValueError):
+        est = {}
+    # A versao baixada ja foi instalada (ou e mais antiga): nada pendente.
+    if est.get("baixada") and versao_tupla(est.get("baixada")) <= versao_tupla(VERSAO):
+        est.pop("baixada", None)
+        est.pop("sha256", None)
+        try:
+            os.remove(_dir_atualizacao(ASSET_SERVIDOR))
+        except FileNotFoundError:
+            pass
+    try:
+        with open(_dir_atualizacao(ARQ_RESULTADO_INSTALACAO), encoding="utf-8") as f:
+            est["resultado_instalacao"] = json.load(f)
+    except (FileNotFoundError, ValueError):
+        pass
+    est["pedido_instalacao"] = os.path.exists(_dir_atualizacao(ARQ_PEDIDO_INSTALACAO))
+    return est
+
+
+def _salvar_estado_atualizacao(est):
+    os.makedirs(_dir_atualizacao(), exist_ok=True)
+    est = {k: v for k, v in est.items() if k not in ("resultado_instalacao", "pedido_instalacao")}
+    tmp = _dir_atualizacao(ARQ_ESTADO_ATUALIZACAO + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(est, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _dir_atualizacao(ARQ_ESTADO_ATUALIZACAO))
+
+
+def _baixar(url, limite, aceitar="application/octet-stream"):
+    req = urllib.request.Request(url, headers={"User-Agent": "KeepPolicial-Servidor",
+                                               "Accept": aceitar})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        dados = r.read(limite + 1)
+    if len(dados) > limite:
+        raise ValueError("arquivo maior que o esperado")
+    return dados
+
+
+def _versao_no_codigo(codigo):
+    achou = re.search(r'^VERSAO\s*=\s*"([0-9.]+)"', codigo, re.M)
+    return achou.group(1) if achou else ""
+
+
+_trava_atualizacao = threading.Lock()
+
+
+def verificar_atualizacao(forcar=False):
+    """Consulta a ultima Release no GitHub (uma vez por dia, ou quando forcado) e,
+    havendo versao nova do servidor, baixa e confere o arquivo. A instalacao so
+    acontece depois que o administrador pedir (painel ou linha de comando)."""
+    with _trava_atualizacao:
+        est = estado_atualizacao()
+        hoje = date.today().isoformat()
+        if not forcar and est.get("ultima_verificacao") == hoje:
+            return est
+        est["ultima_verificacao_em"] = agora_iso()
+        try:
+            rel = json.loads(_baixar(URL_RELEASE, 1024 * 1024, "application/vnd.github+json"))
+            tag = str(rel.get("tag_name") or "")
+            est.update(ultima_release=tag, notas=str(rel.get("body") or "")[:3000],
+                       pagina_release=str(rel.get("html_url") or ""), erro="")
+            assets = {a.get("name"): a.get("browser_download_url")
+                      for a in rel.get("assets") or [] if isinstance(a, dict)}
+            if versao_tupla(tag) > versao_tupla(VERSAO) and assets.get(ASSET_SERVIDOR) \
+                    and versao_tupla(est.get("baixada")) < versao_tupla(tag):
+                dados = _baixar(assets[ASSET_SERVIDOR], MAX_BYTES_ATUALIZACAO)
+                sha = hashlib.sha256(dados).hexdigest()
+                if assets.get(ASSET_SOMAS):
+                    somas = _baixar(assets[ASSET_SOMAS], 64 * 1024).decode("utf-8", "replace")
+                    esperado = re.search(r"^([0-9a-fA-F]{64})\s+\*?%s\s*$"
+                                         % re.escape(ASSET_SERVIDOR), somas, re.M)
+                    if not esperado or esperado.group(1).lower() != sha:
+                        raise ValueError("o SHA-256 do arquivo baixado não confere com o "
+                                         "SHA256SUMS da release")
+                codigo = dados.decode("utf-8")
+                compile(codigo, ASSET_SERVIDOR, "exec")  # so confere a sintaxe; nao executa
+                nova = _versao_no_codigo(codigo)
+                if "def cmd_servir" not in codigo or not nova:
+                    raise ValueError("o arquivo baixado não parece ser o servidor Keep Policial")
+                if versao_tupla(nova) > versao_tupla(VERSAO):
+                    os.makedirs(_dir_atualizacao(), exist_ok=True)
+                    tmp = _dir_atualizacao(ASSET_SERVIDOR + ".tmp")
+                    with open(tmp, "wb") as f:
+                        f.write(dados)
+                    os.replace(tmp, _dir_atualizacao(ASSET_SERVIDOR))
+                    est.update(baixada=nova, sha256=sha, baixada_em=agora_iso())
+                    print("Atualização %s do servidor baixada. Aguardando o administrador "
+                          "autorizar a instalação (painel > Atualizações)." % nova)
+            est["ultima_verificacao"] = hoje
+        except (OSError, ValueError, UnicodeDecodeError, SyntaxError, urllib.error.URLError) as e:
+            # Sem internet ou GitHub fora: tenta de novo mais tarde (nao marca o dia).
+            est["erro"] = str(e)[:300]
+        _salvar_estado_atualizacao(est)
+        return estado_atualizacao()
+
+
+def op_pedir_instalacao(db, autor, ip="local"):
+    est = estado_atualizacao()
+    arq = _dir_atualizacao(ASSET_SERVIDOR)
+    if not est.get("baixada") or not os.path.exists(arq):
+        raise ValueError("Não há atualização baixada para instalar.")
+    with open(arq, "rb") as f:
+        if hashlib.sha256(f.read()).hexdigest() != est.get("sha256"):
+            raise ValueError("O arquivo baixado foi alterado. Clique em 'Verificar agora' "
+                             "para baixar de novo.")
+    try:
+        os.remove(_dir_atualizacao(ARQ_RESULTADO_INSTALACAO))
+    except FileNotFoundError:
+        pass
+    with open(_dir_atualizacao(ARQ_PEDIDO_INSTALACAO), "w", encoding="utf-8") as f:
+        json.dump({"versao": est["baixada"], "sha256": est["sha256"], "autor": autor,
+                   "em": agora_iso()}, f)
+    auditar(db, autor, ip, "PEDIR_ATUALIZACAO_SERVIDOR", "%s -> %s" % (VERSAO, est["baixada"]))
+    db.commit()
+    return est["baixada"]
+
+
+def iniciar_verificador_diario():
+    """Verifica ao iniciar o servidor e, depois, na primeira hora de cada novo dia."""
+    def laco():
+        while True:
+            try:
+                verificar_atualizacao()
+            except Exception:
+                traceback.print_exc()
+            time.sleep(1800)
+    threading.Thread(target=laco, daemon=True, name="atualizacao").start()
+
+
 # ---------------------------------------------------------------------------
 # API HTTPS
 # ---------------------------------------------------------------------------
@@ -461,6 +671,8 @@ ROTAS = [
     ("POST", r"^/api/suspeitos/" + ID + r"/fotos$", "enviar_foto", True),
     ("GET", r"^/api/fotos/" + ID + r"$", "obter_foto", True),
     ("DELETE", r"^/api/fotos/" + ID + r"$", "excluir_foto", True),
+    ("GET", r"^/api/avisos$", "avisos", True),
+    ("POST", r"^/api/avisos/(\d{1,9})/ciente$", "aviso_ciente", True),
 ]
 
 
@@ -627,6 +839,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def r_eu(self, db, u, q):
         self._json(200, {"usuario": u["usuario"], "nome": u["nome"], "papel": u["papel"]})
+
+    def r_avisos(self, db, u, q):
+        """Avisos ativos que este policial ainda nao marcou como 'ciente'."""
+        itens = [dict(r) for r in db.execute(
+            "SELECT a.id, a.titulo, a.mensagem, a.criado_por, a.criado_em FROM avisos a "
+            "WHERE a.ativo = 1 AND NOT EXISTS (SELECT 1 FROM avisos_ciencia c "
+            "WHERE c.aviso_id = a.id AND c.usuario = ?) ORDER BY a.id", (u["usuario"],))]
+        self._json(200, {"avisos": itens})
+
+    def r_aviso_ciente(self, db, u, q, aid):
+        a = db.execute("SELECT titulo FROM avisos WHERE id = ?", (int(aid),)).fetchone()
+        if not a:
+            raise Erro(404, "Aviso não encontrado.")
+        cur = db.execute("INSERT OR IGNORE INTO avisos_ciencia (aviso_id, usuario, em) "
+                         "VALUES (?,?,?)", (int(aid), u["usuario"], agora_iso()))
+        if cur.rowcount:
+            auditar(db, u["usuario"], self.ip, "CIENTE_AVISO", "%s (%s)" % (aid, a["titulo"]))
+        db.commit()
+        self._json(200, {"ok": True})
 
     def r_listar(self, db, u, q):
         termo = normalizar((q.get("q") or [""])[0]).strip()
@@ -957,6 +1188,8 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px 8px;
 th{font-size:13px;color:#5B6475;font-weight:600}
 td small{color:#5B6475}
 label{display:block;font-size:13px;color:#5B6475;margin:10px 0 4px}
+textarea{width:100%;padding:9px 10px;border:1px solid #C3CAD6;border-radius:6px;font-size:15px;font-family:inherit;resize:vertical}
+pre.notas{white-space:pre-wrap;background:#F5F7FA;border-radius:6px;padding:10px;font-size:13px;max-height:260px;overflow:auto}
 input,select{width:100%;padding:9px 10px;border:1px solid #C3CAD6;border-radius:6px;font-size:15px;font-family:inherit}
 .linha{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0 14px}
 .botao{display:inline-block;background:#1B2A4A;color:#fff;border:0;border-radius:6px;padding:9px 16px;font-size:14px;cursor:pointer;text-decoration:none;font-family:inherit}
@@ -965,7 +1198,7 @@ input,select{width:100%;padding:9px 10px;border:1px solid #C3CAD6;border-radius:
 .botao.peq{padding:5px 10px;font-size:13px}
 .acoes{display:flex;gap:6px;flex-wrap:wrap}.acoes form{margin:0}
 .aviso{padding:11px 14px;border-radius:8px;margin-bottom:16px}
-.aviso.ok{background:#E3F2E5;color:#1E5E22}.aviso.erro{background:#FBE4E4;color:#8E1F1F}
+.aviso.ok{background:#E3F2E5;color:#1E5E22}.aviso.novo{background:#FFF4D6;color:#5C4400;border:1px solid #E8C766}.aviso.erro{background:#FBE4E4;color:#8E1F1F}
 .etq{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600}
 .etq.ativo{background:#E3F2E5;color:#1E5E22}.etq.inativo{background:#E9ECF1;color:#5B6475}
 .etq.bloq{background:#FDEBD8;color:#9A3D00}.etq.admin{background:#F6EDCB;color:#6B5200}
@@ -1100,7 +1333,8 @@ class HandlerPainel(BaseHTTPRequestHandler):
         cfg = carregar_config()
         nav = ""
         if s:
-            itens = [("/", "Policiais"), ("/auditoria", "Auditoria"), ("/config", "Configurações")]
+            itens = [("/", "Policiais"), ("/avisos", "Avisos"), ("/auditoria", "Auditoria"),
+                     ("/atualizacoes", "Atualizações"), ("/config", "Configurações")]
             nav = "".join("<a href='%s'%s>%s</a>" % (h, " class='atual'" if h == atual else "", t)
                           for h, t in itens)
             nav += ("<form method='post' action='/sair' style='margin:0'>"
@@ -1111,6 +1345,15 @@ class HandlerPainel(BaseHTTPRequestHandler):
         if s and s.get("aviso"):
             tipo, msg = s.pop("aviso")
             aviso = "<div class='aviso %s'>%s</div>" % (tipo, _e(msg))
+        if s and atual != "/atualizacoes":
+            est = estado_atualizacao()
+            if est.get("baixada") and not est.get("pedido_instalacao"):
+                aviso += ("<div class='aviso novo'><b>Nova versão do servidor baixada: %s</b> "
+                          "(atual: %s). <form method='post' action='/atualizacoes/instalar' "
+                          "style='display:inline;margin-left:8px'><input type='hidden' "
+                          "name='csrf' value='%s'><button class='botao peq'>Instalar agora"
+                          "</button></form> <a href='/atualizacoes'>Ver detalhes</a></div>"
+                          % (_e(est["baixada"]), _e(VERSAO), _e(s["csrf"])))
         return ("<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'>"
                 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
                 "<title>%s - Keep Policial</title><style>%s</style><script>%s</script></head>"
@@ -1135,7 +1378,41 @@ class HandlerPainel(BaseHTTPRequestHandler):
             return self._html(403, "Formulário expirado. Volte e tente novamente.")
         autor = s["usuario"]["usuario"]
         achou = re.fullmatch(r"/usuarios/(\d+)(/ativar|/remover)?", rota)
+        achou_aviso = re.fullmatch(r"/avisos/(\d+)/ativar", rota)
         try:
+            if metodo == "GET" and rota == "/avisos":
+                return self._g_avisos(db, s)
+            if metodo == "POST" and rota == "/avisos/novo":
+                aid = op_publicar_aviso(db, self.form.get("titulo"), self.form.get("mensagem"),
+                                        autor, "painel")
+                self._avisar(s, "ok", "Aviso nº %d publicado. Os policiais verão o pop-up ao "
+                                      "abrir o aplicativo." % aid)
+                return self._redirecionar("/avisos")
+            if metodo == "POST" and achou_aviso:
+                ativo = self.form.get("valor") == "1"
+                titulo = op_definir_aviso_ativo(db, int(achou_aviso.group(1)), ativo, autor,
+                                                "painel")
+                self._avisar(s, "ok", "Aviso '%s' %s." % (titulo, "reativado" if ativo
+                                                          else "encerrado"))
+                return self._redirecionar("/avisos")
+            if metodo == "GET" and rota == "/atualizacoes":
+                return self._g_atualizacoes(db, s)
+            if metodo == "POST" and rota == "/atualizacoes/verificar":
+                est = verificar_atualizacao(forcar=True)
+                if est.get("erro"):
+                    self._avisar(s, "erro", "Não foi possível consultar o GitHub: %s" % est["erro"])
+                elif est.get("baixada"):
+                    self._avisar(s, "ok", "Versão %s baixada e conferida. Clique em "
+                                          "'Instalar agora'." % est["baixada"])
+                else:
+                    self._avisar(s, "ok", "O servidor já está na versão mais recente.")
+                return self._redirecionar("/atualizacoes")
+            if metodo == "POST" and rota == "/atualizacoes/instalar":
+                versao = op_pedir_instalacao(db, autor, "painel")
+                self._avisar(s, "ok", "Instalação da versão %s solicitada. O servidor será "
+                                      "reiniciado em alguns segundos; recarregue esta página."
+                             % versao)
+                return self._redirecionar("/atualizacoes")
             if metodo == "GET" and rota == "/":
                 return self._g_inicio(db, s)
             if metodo == "GET" and rota == "/auditoria":
@@ -1184,7 +1461,9 @@ class HandlerPainel(BaseHTTPRequestHandler):
         except ValueError as e:
             self._avisar(s, "erro", str(e))
             volta = rota if (achou and metodo == "POST" and not achou.group(2)) else "/"
-            return self._redirecionar(volta if rota != "/config" else "/config")
+            if rota == "/config" or rota.startswith("/avisos") or rota.startswith("/atualizacoes"):
+                volta = "/" + rota.split("/")[1]
+            return self._redirecionar(volta)
         return self._html(404, "Página não encontrada.")
 
     # -- entrada -----------------------------------------------------------
@@ -1377,6 +1656,88 @@ class HandlerPainel(BaseHTTPRequestHandler):
                  % (_e(filtro), linhas or "<tr><td colspan='5'>Nenhum registro.</td></tr>"))
         self._enviar(200, self._pagina("Auditoria", corpo, s, "/auditoria"))
 
+    def _g_avisos(self, db, s):
+        csrf = "<input type='hidden' name='csrf' value='%s'>" % _e(s["csrf"])
+        ativos = db.execute("SELECT COUNT(*) FROM usuarios WHERE ativo = 1").fetchone()[0]
+        novo = ("<div class='cartao'><h2>Novo aviso (pop-up no aplicativo)</h2>"
+                "<form method='post' action='/avisos/novo'>%s"
+                "<label>Título</label><input name='titulo' maxlength='%d' "
+                "placeholder='Aviso do comando'>"
+                "<label>Mensagem</label><textarea name='mensagem' rows='5' required "
+                "maxlength='%d' placeholder='Ex.: Reunião geral amanhã às 7h no quartel.'>"
+                "</textarea><p><button class='botao'>Publicar aviso</button></p>"
+                "<p class='dica'>Cada policial vê o aviso em uma janela ao abrir o aplicativo "
+                "e precisa tocar em <b>Ciente</b>. A confirmação fica registrada abaixo e na "
+                "auditoria. Encerre o aviso quando ele não for mais necessário.</p></form></div>"
+                % (csrf, LIMITE_TITULO_AVISO, LIMITE_MENSAGEM_AVISO))
+        linhas = []
+        for a in db.execute("SELECT * FROM avisos ORDER BY id DESC LIMIT 100").fetchall():
+            cientes = db.execute("SELECT usuario, em FROM avisos_ciencia WHERE aviso_id = ? "
+                                 "ORDER BY em", (a["id"],)).fetchall()
+            lista = ", ".join("%s (%s)" % (_e(c["usuario"]), _e(c["em"][5:16])) for c in cientes)
+            situacao = ("<span class='etq ativo'>No ar</span>" if a["ativo"]
+                        else "<span class='etq inativo'>Encerrado</span>")
+            botao = ("<form method='post' action='/avisos/%d/ativar'>%s"
+                     "<input type='hidden' name='valor' value='%s'>"
+                     "<button class='botao sec peq'>%s</button></form>"
+                     % (a["id"], csrf, "0" if a["ativo"] else "1",
+                        "Encerrar" if a["ativo"] else "Reativar"))
+            linhas.append(
+                "<tr><td><b>%s</b><br><small>%s</small><div style='white-space:pre-wrap;"
+                "margin-top:6px'>%s</div></td><td>%s</td><td><b>%d</b> de %d<br>"
+                "<small>%s</small></td><td>%s</td></tr>"
+                % (_e(a["titulo"]), _e("%s por %s" % (a["criado_em"], a["criado_por"])),
+                   _e(a["mensagem"]), situacao, len(cientes), ativos,
+                   lista or "ninguém ainda", botao))
+        tabela = ("<div class='cartao'><h2>Avisos publicados</h2><div class='rolagem'><table>"
+                  "<tr><th>Aviso</th><th>Situação</th><th>Ciência dos policiais</th><th></th>"
+                  "</tr>%s</table></div></div>"
+                  % ("".join(linhas) or "<tr><td colspan='4'>Nenhum aviso publicado.</td></tr>"))
+        self._enviar(200, self._pagina("Avisos", novo + tabela, s, "/avisos"))
+
+    def _g_atualizacoes(self, db, s):
+        est = estado_atualizacao()
+        csrf = "<input type='hidden' name='csrf' value='%s'>" % _e(s["csrf"])
+        if est.get("pedido_instalacao"):
+            situacao = ("<div class='aviso novo'>Instalação solicitada. Aguarde alguns "
+                        "segundos e recarregue a página. Se nada mudar em 1 minuto, rode no "
+                        "terminal: <span class='mono'>sudo keeppolicial-atualizar</span></div>")
+        elif est.get("baixada"):
+            situacao = ("<div class='aviso novo'><b>Versão %s baixada e conferida.</b>"
+                        "<form method='post' action='/atualizacoes/instalar' style='margin:10px 0 0'>"
+                        "%s<button class='botao'>Instalar agora</button></form>"
+                        "<p class='dica' style='margin-bottom:0'>O servidor fica fora do ar por "
+                        "alguns segundos durante a reinicialização. Os dados não são alterados e "
+                        "a versão anterior é guardada como cópia de segurança.</p></div>"
+                        % (_e(est["baixada"]), csrf))
+        else:
+            situacao = "<div class='aviso ok'>O servidor está na versão mais recente conhecida.</div>"
+        res = est.get("resultado_instalacao") or {}
+        resultado = ""
+        if res:
+            resultado = ("<p><b>Última instalação:</b> %s - %s</p>"
+                         % (_e(res.get("em", "")), _e(res.get("mensagem", ""))))
+        erro = ("<p class='aviso erro'>Última consulta falhou: %s</p>" % _e(est["erro"])
+                if est.get("erro") else "")
+        notas = ("<label>Novidades da release %s</label><pre class='notas'>%s</pre>"
+                 % (_e(est.get("ultima_release", "")), _e(est["notas"]))
+                 if est.get("notas") else "")
+        corpo = ("<div class='cartao' style='max-width:760px'><h1>Atualizações</h1>%s"
+                 "<div class='linha'><div><label>Versão instalada</label><b class='mono'>%s</b>"
+                 "</div><div><label>Última release no GitHub</label><b class='mono'>%s</b></div>"
+                 "<div><label>Última consulta</label>%s</div></div>%s%s%s"
+                 "<form method='post' action='/atualizacoes/verificar' style='margin-top:14px'>%s"
+                 "<button class='botao sec'>Verificar agora</button></form>"
+                 "<p class='dica'>O servidor consulta o repositório <span class='mono'>%s</span> "
+                 "ao iniciar e uma vez por dia. Quando há versão nova, ela é baixada e conferida "
+                 "automaticamente, mas só é instalada quando o administrador clica em "
+                 "<b>Instalar agora</b>. O aplicativo dos celulares se atualiza sozinho pelo "
+                 "mesmo repositório.</p></div>"
+                 % (situacao, _e(VERSAO), _e(est.get("ultima_release") or "-"),
+                    _e(est.get("ultima_verificacao_em") or "nunca"), erro, resultado, notas,
+                    csrf, _e(REPO_GITHUB)))
+        self._enviar(200, self._pagina("Atualizações", corpo, s, "/atualizacoes"))
+
     def _g_config(self, db, s):
         cfg = carregar_config()
         corpo = ("<div class='cartao' style='max-width:640px'><h1>Configurações</h1>"
@@ -1481,6 +1842,7 @@ def cmd_servir():
     print("Ouvindo em https://%s:%s" % (cfg["endereco"], cfg["porta"]))
     print("Código de verificação (1º acesso no celular): " + codigo_verificacao())
     iniciar_painel(cfg)
+    iniciar_verificador_diario()
     sys.stdout.flush()
     try:
         servidor.serve_forever()
@@ -1630,6 +1992,24 @@ def cmd_backup(destino):
     print("ATENÇÃO: o arquivo contém dados sigilosos. Guarde em mídia protegida.")
 
 
+def cmd_atualizacao(instalar=False):
+    preparar_dados()
+    est = verificar_atualizacao(forcar=True)
+    print("Versão instalada: %s | última release no GitHub: %s"
+          % (VERSAO, est.get("ultima_release") or "-"))
+    if est.get("erro"):
+        print("Falha ao consultar o GitHub: " + est["erro"])
+    if not est.get("baixada"):
+        print("Nenhuma atualização pendente.")
+        return
+    print("Versão %s baixada e conferida." % est["baixada"])
+    if instalar:
+        versao = _cli(op_pedir_instalacao, abrir_db(), "console")
+        print("Instalação da versão %s solicitada. O servidor reinicia em instantes." % versao)
+    else:
+        print("Para instalar: sudo keeppolicial atualizacao --instalar")
+
+
 def menu():
     opcoes = [
         ("Listar usuários", lambda: cmd_usuario_listar()),
@@ -1648,6 +2028,9 @@ def menu():
          lambda: cmd_configurar(input("Nome do destacamento: ").strip(), None, None)),
         ("Mostrar código de verificação do servidor", lambda: cmd_gerar_certificado()),
         ("Fazer backup", lambda: cmd_backup(None)),
+        ("Verificar / instalar atualização",
+         lambda: cmd_atualizacao(input("Instalar se houver versão nova? (s/N): ")
+                                 .strip().lower() == "s")),
     ]
     while True:
         cfg = carregar_config() if os.path.isdir(DADOS) else CONFIG_PADRAO
@@ -1698,6 +2081,10 @@ def main():
     cf.add_argument("--horas-sessao", type=float)
     cf.add_argument("--endereco-publico", help="endereço pela internet (ex.: nome.tail1234.ts.net)")
 
+    at = sub.add_parser("atualizacao", help="consulta/baixa a versão nova no GitHub")
+    at.add_argument("--instalar", action="store_true",
+                    help="pede a instalação da versão baixada")
+
     bk = sub.add_parser("backup", help="gera backup .tar.gz dos dados")
     bk.add_argument("destino", nargs="?")
 
@@ -1730,6 +2117,8 @@ def main():
         cmd_configurar(args.nome, args.porta, args.horas_sessao, args.endereco_publico)
     elif args.cmd == "backup":
         cmd_backup(args.destino)
+    elif args.cmd == "atualizacao":
+        cmd_atualizacao(args.instalar)
     else:
         menu()
 

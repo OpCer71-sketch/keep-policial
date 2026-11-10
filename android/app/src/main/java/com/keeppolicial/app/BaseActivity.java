@@ -63,6 +63,19 @@ public abstract class BaseActivity extends Activity {
         }
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Primeira abertura do dia: procura versao nova do app no GitHub.
+        if (!encerrando) Atualizador.aoAbrir(this);
+    }
+
+    @Override
+    protected void onPause() {
+        Atualizador.aoSair(this);
+        super.onPause();
+    }
+
     protected void irParaLogin() {
         startActivity(new Intent(this, LoginActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));

@@ -224,6 +224,17 @@ public final class Api {
         executar(autenticado("/api/fotos/" + idFoto).delete().build()).close();
     }
 
+    /** Avisos do administrador que este policial ainda nao confirmou. */
+    static JSONArray avisos() throws IOException {
+        JSONArray a = json(autenticado("/api/avisos").build()).optJSONArray("avisos");
+        return a != null ? a : new JSONArray();
+    }
+
+    static void avisoCiente(long id) throws IOException {
+        executar(autenticado("/api/avisos/" + id + "/ciente")
+                .post(RequestBody.create("{}", JSON)).build()).close();
+    }
+
     // -- infraestrutura ---------------------------------------------------
 
     private static Request.Builder autenticado(String caminho) throws IOException {

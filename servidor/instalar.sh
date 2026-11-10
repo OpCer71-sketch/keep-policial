@@ -26,6 +26,8 @@ fi
 
 install -d -m 755 "$DIR_APP"
 install -m 644 "$ORIGEM/keep_servidor.py" "$DIR_APP/keep_servidor.py"
+install -m 755 "$ORIGEM/atualizar-servidor.sh" "$DIR_APP/atualizar-servidor.sh"
+ln -sf "$DIR_APP/atualizar-servidor.sh" /usr/local/bin/keeppolicial-atualizar
 install -d -m 700 -o "$USUARIO_SVC" -g "$USUARIO_SVC" "$DIR_DADOS"
 
 # Atalho de administração: "sudo keeppolicial" abre o menu
@@ -68,7 +70,32 @@ UMask=0077
 WantedBy=multi-user.target
 EOF
 
+# Atualização automática: o servidor baixa a versão nova do GitHub e, quando o
+# administrador clica em "Instalar agora" no painel, cria o arquivo de pedido
+# que dispara a instalação abaixo (como root).
+cat > /etc/systemd/system/keeppolicial-atualizar.service <<EOF
+[Unit]
+Description=Keep Policial - instala a atualização do servidor pedida no painel
+
+[Service]
+Type=oneshot
+ExecStart=$DIR_APP/atualizar-servidor.sh
+EOF
+
+cat > /etc/systemd/system/keeppolicial-atualizar.path <<EOF
+[Unit]
+Description=Keep Policial - aguarda pedido de atualização do servidor
+
+[Path]
+PathExists=$DIR_DADOS/atualizacao/INSTALAR
+Unit=keeppolicial-atualizar.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
+systemctl enable --now keeppolicial-atualizar.path
 systemctl enable --now keeppolicial.service
 systemctl restart keeppolicial.service
 
@@ -113,5 +140,6 @@ echo
 echo " Painel do administrador: menu de aplicativos > 'Keep Policial - Painel'"
 echo "                          ou http://127.0.0.1:$PORTA_PAINEL neste computador"
 echo " Menu no terminal:        sudo keeppolicial"
+echo " Atualizar o servidor:    painel > Atualizações  ou  sudo keeppolicial-atualizar"
 echo " Situação:                systemctl status keeppolicial"
 echo "==================================================================="

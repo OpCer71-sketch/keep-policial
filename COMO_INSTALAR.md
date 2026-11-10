@@ -50,9 +50,32 @@ No painel o administrador pode:
 - **desativar, reativar ou desbloquear** usuários (desbloquear libera quem errou a senha 5 vezes);
 - ver, para cada policial, o texto exato que ele digita no app (`login@endereço`);
 - ver a **auditoria** e filtrá-la por usuário;
+- publicar **avisos** que aparecem como pop-up no app (veja "Avisos do comando");
+- **atualizar o servidor** pela página **Atualizações** (veja "Atualização do servidor");
 - mudar o **nome do destacamento**, o **endereço pela internet** e a **duração da sessão** (padrão: 10 horas).
 
 O painel não deixa remover, desativar ou rebaixar o **último administrador ativo**.
+
+### Atualização do servidor
+
+O servidor consulta as [Releases do GitHub](https://github.com/OpCer71-sketch/keep-policial/releases) **ao iniciar** e depois **uma vez por dia**.
+Quando há versão nova, ele baixa o arquivo e confere o SHA-256 e a sintaxe. Em seguida, o painel mostra o aviso **Nova versão do servidor baixada** com o botão **Instalar agora**.
+Nada é instalado sem esse clique do administrador.
+
+Ao clicar, o serviço `keeppolicial-atualizar` (root) faz a instalação:
+
+1. troca o programa e guarda a versão anterior em `/opt/keeppolicial/keep_servidor.py.anterior`;
+2. reinicia o servidor, que fica alguns segundos fora do ar;
+3. se a versão nova não iniciar, **volta sozinho para a anterior**.
+
+O resultado aparece em **Atualizações** no painel. Pelo terminal:
+
+```bash
+sudo keeppolicial-atualizar
+```
+
+> **Vindo da versão 2.0:** rode `sudo ./instalar.sh` uma vez com a pasta `servidor` da versão 3.0.
+> Isso instala o serviço de atualização. As próximas versões chegam pelo painel. Os dados e usuários são mantidos.
 
 ### Menu no terminal (alternativa)
 
@@ -207,7 +230,29 @@ Quem já está cadastrado (mesmo CPF, ou mesmo nome e mãe) não é duplicado: o
 
 ### Versão
 
-Versão atual: **2.0** (servidor 2.0.0, app 2.0). Ela aparece no fim do menu do app e no topo do painel. Atualize primeiro o servidor e depois os celulares.
+Versão atual: **3.0** (servidor 3.0.0, app 3.0). Ela aparece no fim do menu do app e no topo do painel. Atualize primeiro o servidor e depois os celulares.
+
+### Atualização automática do app
+
+Na **primeira abertura do dia**, o app consulta a última versão publicada em
+[Releases](https://github.com/OpCer71-sketch/keep-policial/releases) no GitHub.
+Se houver versão nova, ele **baixa o APK sozinho** e mostra a janela **Atualização disponível**.
+Para instalar, toque em **Instalar** e confirme na tela do Android.
+
+- Na primeira vez, o Android pede para **permitir que o Keep Policial instale apps** ("Permitir desta fonte"). Ative a opção e volte ao app.
+- **Depois** adia o aviso até o dia seguinte. Para instalar antes, use **menu > Verificar atualização do app**.
+- O app confere o arquivo baixado (SHA-256 da release, nome do pacote e número da versão).
+  O Android também só instala por cima se o APK tiver a **mesma assinatura** da versão instalada.
+- As fichas ficam no servidor, então atualizar o app não apaga nada.
+
+### Avisos do comando (pop-up)
+
+No painel do administrador, em **Avisos**, o comandante escreve um título e uma mensagem e clica em **Publicar aviso**.
+Ao abrir o app, cada policial vê o aviso numa janela e precisa tocar em **Ciente**.
+
+- A página **Avisos** mostra quem já deu ciência e quando. A ciência também fica registrada na auditoria (`CIENTE_AVISO`).
+- Cada policial vê cada aviso **uma vez**, até tocar em Ciente.
+- **Encerrar** tira o aviso do ar para quem ainda não o viu. **Reativar** o coloca de volta.
 
 ### Sessão e segurança no celular
 
@@ -222,9 +267,50 @@ Versão atual: **2.0** (servidor 2.0.0, app 2.0). Ela aparece no fim do menu do 
 
 ## Recompilar o aplicativo
 
+No Linux, com as ferramentas em `~/android-tools` (JDK 17, Android SDK 34 e Gradle 8.7):
+
 ```bash
-$env:JAVA_HOME="C:\Users\DRPolicena\android-tools\jdk-17.0.20.1+1"; cd "C:\Users\DRPolicena\OneDrive\Documentos\IA\KeepPolicial\android"; & C:\Users\DRPolicena\android-tools\gradle-8.7\bin\gradle.bat --offline assembleRelease
+cd android && ANDROID_HOME=~/android-tools/sdk ~/android-tools/gradle-8.7/bin/gradle assembleRelease
 ```
 
-O APK sai em `%USERPROFILE%\.keeppolicial-build\app\outputs\apk\release\app-release.apk`
-(fora do OneDrive, que trava arquivos durante a compilação).
+O APK sai em `~/.keeppolicial-build/app/outputs/apk/release/app-release.apk`.
+
+### Chave de assinatura (MUITO IMPORTANTE)
+
+A partir da 3.0 o app é assinado com a **chave definitiva** do Keep Policial. Ela fica fora do repositório, em `~/.keeppolicial/`:
+
+- `keeppolicial-release.jks`: a chave;
+- `assinatura.properties`: a senha e o caminho da chave.
+
+O Android só aceita uma atualização se o APK novo tiver a **mesma assinatura** do instalado.
+Se essa chave se perder, todos os celulares terão de desinstalar e reinstalar o app.
+**Guarde cópias da pasta `~/.keeppolicial`** em dois lugares seguros, como um pendrive guardado com o comandante e outra mídia. Não publique essa pasta.
+
+Para compilar em outro computador, copie a pasta para `~/.keeppolicial/` e ajuste o caminho `storeFile` no `.properties`.
+Também é possível apontar outro arquivo com a variável `KEEP_ASSINATURA`.
+
+> **Passagem da 2.0 para a 3.0:** a chave que assinou a 2.0 se perdeu com o computador antigo.
+> Por isso, **uma única vez**, cada policial precisa desinstalar a 2.0 e instalar a 3.0.
+> As fichas ficam no servidor e não se perdem. No primeiro acesso, ele digita `login@endereço` de novo e confere o código de verificação.
+> Da 3.0 em diante, as atualizações chegam sozinhas.
+
+## Publicar uma nova versão (Releases)
+
+O app e o servidor procuram atualização na **última release** do repositório. Cada release deve ter:
+
+| Arquivo | Para quê |
+|---|---|
+| `KeepPolicial.apk` | atualização do app |
+| `keep_servidor.py` | atualização do servidor |
+| `SHA256SUMS` | conferência dos dois arquivos |
+
+Antes de publicar, aumente a versão em dois lugares:
+
+- **app:** `versionCode` e `versionName` em `android/app/build.gradle`;
+- **servidor:** `VERSAO` em `servidor/keep_servidor.py`.
+
+A tag da release segue o formato `v3.1`. Depois, publique com o script (precisa do `gh` autenticado):
+
+```bash
+./publicar-release.sh v3.1 caminho/para/app-release.apk
+```

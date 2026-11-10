@@ -24,7 +24,7 @@ import java.util.List;
 /** Quadro de fichas (estilo bloco de notas): cada cartao e um suspeito. */
 public class ListaActivity extends BaseActivity {
     private static final int MENU_ATUALIZAR = 1, MENU_SESSAO = 2, MENU_SAIR = 3, MENU_IMPORTAR = 4,
-            MENU_VERSAO = 5;
+            MENU_VERSAO = 5, MENU_ATUALIZACAO = 6;
     private static final int REQ_IMPORTAR = 20;
 
     private final List<JSONObject> fichas = new ArrayList<>();
@@ -34,6 +34,8 @@ public class ListaActivity extends BaseActivity {
     private View progresso;
     private int geracao;
     private final Runnable buscar = this::carregar;
+    /** Ha um aviso do administrador na tela (evita abrir dois ao mesmo tempo). */
+    private boolean exibindoAviso;
 
     @Override
     protected void onCreate(Bundle estado) {
@@ -74,7 +76,61 @@ public class ListaActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (Sessao.ativa()) carregar();
+        if (Sessao.ativa()) {
+            carregar();
+            buscarAvisos();
+        }
+    }
+
+    // -- avisos do administrador (pop-up) ----------------------------------------------
+
+    private void buscarAvisos() {
+        if (exibindoAviso) return;
+        exibindoAviso = true;
+        EXEC.execute(() -> {
+            JSONArray lista;
+            try {
+                lista = Api.avisos();
+            } catch (Exception e) {
+                lista = new JSONArray();  // falha de rede: tenta de novo na proxima abertura
+            }
+            final JSONArray avisos = lista;
+            ui.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    exibindoAviso = false;
+                    return;
+                }
+                mostrarAviso(avisos, 0);
+            });
+        });
+    }
+
+    private void mostrarAviso(final JSONArray avisos, final int i) {
+        final JSONObject a = avisos.optJSONObject(i);
+        if (a == null || isFinishing() || isDestroyed()) {
+            exibindoAviso = false;
+            return;
+        }
+        String rodape = "\n\n— " + a.optString("criado_por") + ", "
+                + a.optString("criado_em").replaceFirst(
+                "^(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}:\\d{2}).*$", "$3/$2/$1 $4");
+        new AlertDialog.Builder(this)
+                .setTitle(a.optString("titulo", "Aviso do comando"))
+                .setMessage(a.optString("mensagem") + rodape)
+                .setIcon(android.R.drawable.ic_dialog_info)
+                .setCancelable(false)
+                .setPositiveButton("Ciente", (d, w) -> {
+                    final long id = a.optLong("id");
+                    EXEC.execute(() -> {
+                        try {
+                            Api.avisoCiente(id);
+                        } catch (Exception ignorado) {
+                            // sem rede: o aviso aparece de novo na proxima abertura
+                        }
+                    });
+                    mostrarAviso(avisos, i + 1);
+                })
+                .show();
     }
 
     private void carregar() {
@@ -107,7 +163,8 @@ public class ListaActivity extends BaseActivity {
                 + new java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
                 .format(new java.util.Date(Sessao.expiraEm))).setEnabled(false);
         menu.add(0, MENU_SAIR, 3, "Sair (encerrar sessão)");
-        menu.add(0, MENU_VERSAO, 4, "Keep Policial - versão " + BuildConfig.VERSION_NAME)
+        menu.add(0, MENU_ATUALIZACAO, 4, "Verificar atualização do app");
+        menu.add(0, MENU_VERSAO, 5, "Keep Policial - versão " + BuildConfig.VERSION_NAME)
                 .setEnabled(false);
         return true;
     }
@@ -247,6 +304,9 @@ public class ListaActivity extends BaseActivity {
                 return true;
             case MENU_IMPORTAR:
                 explicarImportacao();
+                return true;
+            case MENU_ATUALIZACAO:
+                Atualizador.verificarAgora(this);
                 return true;
             case MENU_SAIR:
                 new AlertDialog.Builder(this)

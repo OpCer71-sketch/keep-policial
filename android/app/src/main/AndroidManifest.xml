@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Atualizacao do app baixada do GitHub: pede ao Android para instalar o APK. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="false"
@@ -38,6 +40,12 @@
         <provider
             android:name=".CameraProvider"
             android:authorities="com.keeppolicial.app.camera"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="com.keeppolicial.app.apk"
             android:exported="false"
             android:grantUriPermissions="true" />
     </application>
