@@ -1,0 +1,72 @@
+KEEP POLICIAL 3.0 - PACOTE DE INSTALACAO
+=========================================
+
+O QUE TEM NESTA PASTA
+
+  KeepPolicial.apk ............ aplicativo para o celular Android
+  servidor/ ................... programa do computador do quartel (Ubuntu)
+  ATUALIZAR_SERVIDOR_3.0.md ... passo a passo para quem ja tem a versao 2.0
+  COMO_INSTALAR.md ............ manual completo (instalacao, uso e problemas)
+
+Os arquivos .md abrem em qualquer editor de texto ou no navegador.
+
+
+1) INSTALACAO DO ZERO NO COMPUTADOR DO QUARTEL (UBUNTU)
+--------------------------------------------------------
+
+  a) Copie esta pasta inteira para a "Pasta pessoal" do computador.
+  b) Abra o Terminal (teclas Ctrl + Alt + T) e digite, um por vez,
+     apertando Enter depois de cada linha:
+
+        cd ~/KeepPolicial-3.0/servidor
+        sudo bash instalar.sh
+
+     Ao digitar a senha do computador, nada aparece na tela. Isso e normal.
+     O instalador pergunta o nome do destacamento e cria o login do
+     comandante (administrador). Anote o login e a senha.
+
+  c) Para os celulares acessarem tambem pelo 4G (fora do quartel):
+
+        sudo bash ligar-internet.sh
+
+     Abra no navegador o link que aparecer e entre na conta Tailscale
+     do destacamento. No final ele mostra o endereco, por exemplo:
+         sd.silva@pc-o1.tail733bae.ts.net
+
+  d) Abra o painel: menu de aplicativos > "Keep Policial - Painel do
+     administrador". Cadastre os policiais.
+
+  e) CONFIRA em Configuracoes > "Endereco pela internet". Ele deve
+     estar preenchido com o nome terminado em .ts.net. Se estiver vazio,
+     preencha (sem https:// e sem a porta) e clique em Salvar. Sem isso
+     o painel mostra o endereco da rede local (ex.: 192.168.1.13), que
+     NAO funciona no 4G.
+
+
+2) JA TENHO A VERSAO 2.0 NO SERVIDOR
+------------------------------------
+
+  Siga o arquivo ATUALIZAR_SERVIDOR_3.0.md.
+
+
+3) CELULARES
+------------
+
+  - Copie o KeepPolicial.apk para o celular e toque nele para instalar.
+    O Android pode pedir para "permitir instalar apps desta fonte".
+  - Se o celular tem a versao 2.0: DESINSTALE a 2.0 antes (so desta vez).
+    As fichas ficam no servidor e nao se perdem.
+  - Entre com  login@endereco  (como um e-mail), usando o endereco que
+    termina em .ts.net para funcionar no 4G e em qualquer Wi-Fi.
+  - No primeiro acesso confira o codigo de verificacao com o painel.
+
+
+DAQUI PARA FRENTE AS ATUALIZACOES SAO AUTOMATICAS
+-------------------------------------------------
+
+  - Servidor: o painel mostra "Nova versao do servidor baixada".
+    E so clicar em "Instalar agora".
+  - Celulares: o app avisa "Atualizacao disponivel". E so tocar
+    em "Instalar".
+
+Uso interno da corporacao. Nao compartilhe dados de fichas.

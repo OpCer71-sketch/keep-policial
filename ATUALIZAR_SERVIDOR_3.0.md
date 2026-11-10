@@ -17,38 +17,32 @@ Leva uns **15 minutos**. Durante a troca, o aplicativo fica fora do ar por **men
 
 ---
 
-## Passo 1 — Colocar a versão nova no pendrive
+## Passo 1 — Baixar o pacote da versão 3.0
 
-Faça isso em qualquer computador com internet. Escolha **uma** das opções.
+Num computador com internet:
 
-**Opção A, mais fácil:** peça a quem cuida do sistema para copiar a pasta **`servidor`** da versão 3.0 para o pendrive.
+1. Clique neste link para baixar o pacote completo:
+   **https://github.com/OpCer71-sketch/keep-policial/releases/latest/download/KeepPolicial-instalacao.zip**
+2. O arquivo **`KeepPolicial-instalacao.zip`** vai para a pasta **Downloads**.
+3. Copie esse arquivo para o pendrive.
 
-**Opção B, pelo GitHub:**
-1. Abra o navegador e entre em: **https://github.com/OpCer71-sketch/keep-policial**
-2. Clique no botão verde **`<> Code`** e depois em **Download ZIP**.
-3. Abra o arquivo baixado, `keep-policial-main.zip`, e copie para o pendrive a pasta **`servidor`** que está dentro dele.
+Dentro dele está a pasta **`KeepPolicial-3.0`**, com:
 
-Confira se dentro da pasta `servidor` do pendrive existem estes **4 arquivos**:
-
-- `keep_servidor.py`
-- `instalar.sh`
-- `atualizar-servidor.sh` ← este é novo na 3.0
-- `ligar-internet.sh`
-
-Se faltar o `atualizar-servidor.sh`, a pasta é da versão antiga. Volte e pegue a certa.
+- `servidor` (o programa do computador do quartel);
+- `KeepPolicial.apk` (o aplicativo dos celulares);
+- `LEIA-ME PRIMEIRO.txt` e os manuais.
 
 ---
 
-## Passo 2 — Copiar a pasta para o computador do servidor
+## Passo 2 — Abrir o pacote no computador do servidor
 
 1. Coloque o pendrive no computador do servidor.
-2. Abra a pasta do pendrive que aparece na tela, ou abra **Arquivos** e clique no nome do pendrive na lateral esquerda.
-3. Clique com o **botão direito** na pasta **`servidor`** e escolha **Copiar**.
-4. Na lateral esquerda, clique em **Pasta pessoal** (o ícone de casinha).
-5. Clique com o botão direito num espaço vazio e escolha **Colar**.
-   - Se perguntar se quer **substituir** uma pasta `servidor` antiga, escolha **Substituir** ou **Mesclar** e depois **Substituir tudo**.
+2. Abra o pendrive em **Arquivos** (clique no nome dele na lateral esquerda).
+3. Clique com o **botão direito** em `KeepPolicial-instalacao.zip` e escolha **Extrair para...** ou **Extrair aqui**.
+4. Copie a pasta **`KeepPolicial-3.0`** que apareceu.
+5. Na lateral esquerda, clique em **Pasta pessoal** (o ícone de casinha), clique com o botão direito num espaço vazio e escolha **Colar**.
 
-Agora existe uma pasta `servidor` dentro da sua Pasta pessoal.
+Agora existe a pasta `KeepPolicial-3.0` dentro da sua Pasta pessoal.
 
 ---
 
@@ -77,7 +71,7 @@ Ainda no Terminal, digite **um comando de cada vez**, apertando **Enter** depois
 1. Entrar na pasta:
 
    ```bash
-   cd ~/servidor
+   cd ~/KeepPolicial-3.0/servidor
    ```
 
 2. Permitir que o instalador rode:
@@ -148,7 +142,7 @@ A cópia do passo 3 fica numa pasta protegida do computador. Para levá-la ao pe
 A versão 3.0 do aplicativo precisa ser instalada **à mão, uma única vez**, em cada celular:
 
 1. **Desinstale** o Keep Policial antigo (2.0) do celular.
-2. Instale o **KeepPolicial-3.0.apk**.
+2. Instale o **KeepPolicial.apk** (está no pacote).
    Ele está em [Releases](https://github.com/OpCer71-sketch/keep-policial/releases), ou peça o arquivo a quem cuida do sistema.
 3. Entre normalmente com **`login@endereço`** e a senha.
 4. No primeiro acesso, o app mostra o **código de verificação**. Confira se é igual ao que aparece no painel e confirme.
@@ -172,7 +166,8 @@ A partir da 3.0 **não é preciso repetir este tutorial**.
 | Problema | O que fazer |
 |---|---|
 | `Permissão negada` ao rodar o instalador | Confira se digitou o `sudo` no começo do comando. |
-| `Arquivo ou diretório inexistente` | A pasta `servidor` não está na Pasta pessoal. Refaça o passo 2. |
+| `Arquivo ou diretório inexistente` | A pasta `KeepPolicial-3.0` não está na Pasta pessoal. Refaça o passo 2. |
+| No 4G o app não conecta, mas no Wi-Fi do quartel funciona | No painel, vá em **Configurações** e confira o campo **Endereço pela internet**. Ele deve ter o nome terminado em `.ts.net` (ex.: `pc-o1.tail733bae.ts.net`). Se estiver vazio, rode `sudo bash ligar-internet.sh` na pasta `servidor`. No celular, use `login@nome.ts.net`, e não o número `192.168...`. |
 | A senha não é aceita | Digite com calma (ela não aparece na tela) e confira o Caps Lock. |
 | O painel não abre | No Terminal, rode `sudo systemctl restart keeppolicial`, espere 10 segundos e tente de novo. |
 | O app no celular diz que não conecta | Confira se o computador do servidor está ligado e conectado à internet. |

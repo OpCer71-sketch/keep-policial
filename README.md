@@ -14,7 +14,9 @@ As fichas (dados, passagens, veículos e fotos) ficam somente no servidor do des
 | `COMO_INSTALAR.md` | Instalação, uso e manutenção. |
 | `ATUALIZAR_SERVIDOR_3.0.md` | Passo a passo simples para atualizar o servidor da 2.0 para a 3.0. |
 
-O APK pronto fica em [Releases](../../releases).
+**Baixar tudo pronto (servidor, APK e manuais):** [KeepPolicial-instalacao.zip](https://github.com/OpCer71-sketch/keep-policial/releases/latest/download/KeepPolicial-instalacao.zip). Abra o `LEIA-ME PRIMEIRO.txt` que vem dentro.
+
+O APK sozinho fica em [Releases](../../releases).
 
 ## Funcionalidades
 
