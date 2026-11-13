@@ -45,7 +45,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSAO = "3.0.0"
+VERSAO = "3.1.0"
 DADOS = os.environ.get("KEEP_DADOS", "/var/lib/keeppolicial")
 
 ARQ_CONFIG = "config.json"
@@ -59,6 +59,15 @@ REPO_GITHUB = "OpCer71-sketch/keep-policial"
 URL_RELEASE = "https://api.github.com/repos/%s/releases/latest" % REPO_GITHUB
 ASSET_SERVIDOR = "keep_servidor.py"
 ASSET_SOMAS = "SHA256SUMS"
+ASSET_ASSINATURA = "SHA256SUMS.sig"
+# Chave PUBLICA com que as releases sao assinadas (a privada fica so com o
+# mantenedor). Mesmo que a conta do GitHub seja invadida, uma release sem a
+# assinatura correta e recusada e nenhum codigo falso chega ao servidor.
+CHAVE_PUBLICA_RELEASE = """-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuMPliZVZiBvO18tLVbJ9f7l88YP7
+z/ttbQsAejJ3Qhk6YB+gh85HVK6OZawpsq6Jw6Uveu9qai58ohdJGyoGmA==
+-----END PUBLIC KEY-----
+"""
 DIR_ATUALIZACAO = "atualizacao"
 ARQ_ESTADO_ATUALIZACAO = "estado.json"
 # Pedido de instalacao: o servico "keeppolicial-atualizar.path" (root) vigia
@@ -115,6 +124,21 @@ MINUTOS_JANELA_IP = 15
 
 _trava_login = threading.Lock()
 _falhas_ip = {}
+# Hash de mentira: usuario inexistente gasta o mesmo tempo que um existente,
+# para nao revelar por tempo de resposta quais logins existem.
+_HASH_FALSO = None
+
+# Auditoria de falhas (erros do servidor e do aplicativo, para suporte)
+MAX_FALHAS_GUARDADAS = 500
+LIMITE_DETALHE_FALHA = 6000
+MAX_RELATOS_APP_HORA = 10
+MAX_CONEXOES = 120
+_conexoes = threading.BoundedSemaphore(MAX_CONEXOES)
+
+# Backup automatico
+DIR_BACKUPS = "backups"
+BACKUPS_GUARDADOS = 14
+HORAS_ENTRE_BACKUPS = 24
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +328,24 @@ CREATE TABLE IF NOT EXISTS avisos_ciencia (
     em TEXT NOT NULL,
     PRIMARY KEY (aviso_id, usuario)
 );
+CREATE TABLE IF NOT EXISTS falhas (
+    id INTEGER PRIMARY KEY,
+    assinatura TEXT NOT NULL,
+    origem TEXT NOT NULL,
+    titulo TEXT NOT NULL,
+    detalhe TEXT NOT NULL,
+    usuario TEXT,
+    versao TEXT,
+    primeira_em TEXT NOT NULL,
+    ultima_em TEXT NOT NULL,
+    ocorrencias INTEGER NOT NULL DEFAULT 1,
+    resolvida INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS dispositivos (
+    usuario TEXT PRIMARY KEY,
+    versao_app TEXT NOT NULL,
+    ultima_em TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS ix_passagens ON passagens(suspeito_id);
 CREATE INDEX IF NOT EXISTS ix_veiculos ON veiculos(suspeito_id);
 CREATE INDEX IF NOT EXISTS ix_fotos ON fotos(suspeito_id);
@@ -353,8 +395,109 @@ def _ip_bloqueado(ip):
     return len(lista) >= FALHAS_POR_IP
 
 
+# -- auditoria de falhas ------------------------------------------------------
+# Guarda erros do servidor e do aplicativo SEM dados pessoais (CPF, tokens,
+# e-mails, IDs e IPs sao mascarados) para o administrador copiar o relatorio
+# e enviar ao suporte.
+
+_PADROES_SENSIVEIS = [
+    (re.compile(r"Bearer\s+[A-Za-z0-9_\-.]+"), "Bearer ***"),
+    (re.compile(r"(?i)(senha|password|token|authorization)(\s*[=:]\s*)\S+"), r"\1\2***"),
+    (re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b"), "[CPF]"),
+    (re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+"), "[login@endereco]"),
+    (re.compile(r"\b[0-9a-fA-F]{32}\b"), "[id]"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[ip]"),
+    (re.compile(r"/home/[^/\s]+"), "/home/[usuario]"),
+    (re.compile(r"([?&](q|nome|cpf|rg|placa)=)[^&\s\"']*"), r"\1[removido]"),
+]
+
+
+def limpar_texto(texto, limite=LIMITE_DETALHE_FALHA):
+    texto = str(texto or "")
+    for padrao, troca in _PADROES_SENSIVEIS:
+        texto = padrao.sub(troca, texto)
+    texto = "".join(c for c in texto if c == "\n" or c == "\t" or c >= " ")
+    if len(texto) > limite:
+        texto = texto[:limite // 3] + "\n[... cortado ...]\n" + texto[-(limite * 2 // 3):]
+    return texto
+
+
+def registrar_falha(origem, titulo, detalhe, usuario="", versao="", db=None):
+    """Registra uma falha. Nunca levanta excecao (nao pode piorar o problema)."""
+    try:
+        titulo = limpar_texto(titulo, 160).replace("\n", " ").strip() or "(sem titulo)"
+        detalhe = limpar_texto(detalhe)
+        linhas = [l for l in detalhe.splitlines() if l.strip()]
+        base = origem + "|" + titulo + "|" + "|".join(linhas[-3:])
+        assinatura = hashlib.sha1(base.encode("utf-8", "replace")).hexdigest()[:16]
+        proprio = db is None
+        if proprio:
+            db = abrir_db()
+        try:
+            agora = agora_iso()
+            ja = db.execute("SELECT id FROM falhas WHERE assinatura=? AND resolvida=0",
+                            (assinatura,)).fetchone()
+            if ja:
+                db.execute("UPDATE falhas SET ocorrencias=ocorrencias+1, ultima_em=? WHERE id=?",
+                           (agora, ja["id"]))
+            else:
+                db.execute(
+                    "INSERT INTO falhas (assinatura, origem, titulo, detalhe, usuario, versao, "
+                    "primeira_em, ultima_em) VALUES (?,?,?,?,?,?,?,?)",
+                    (assinatura, origem, titulo, detalhe, usuario or "", str(versao or "")[:20],
+                     agora, agora))
+                db.execute("DELETE FROM falhas WHERE id NOT IN "
+                           "(SELECT id FROM falhas ORDER BY id DESC LIMIT ?)",
+                           (MAX_FALHAS_GUARDADAS,))
+            db.commit()
+        finally:
+            if proprio:
+                db.close()
+    except Exception:
+        traceback.print_exc()
+
+
+def relatorio_suporte(db):
+    """Texto pronto para o administrador copiar e colar no suporte."""
+    cfg = carregar_config()
+    est = estado_atualizacao()
+    abertas = db.execute("SELECT * FROM falhas WHERE resolvida=0 ORDER BY ultima_em DESC "
+                         "LIMIT 25").fetchall()
+    apps = db.execute("SELECT versao_app, COUNT(*) n FROM dispositivos GROUP BY versao_app "
+                      "ORDER BY versao_app").fetchall()
+    out = ["=== RELATORIO KEEP POLICIAL ===",
+           "Gerado em: " + agora_iso(),
+           "Servidor: %s | Python %s | %s" % (VERSAO, sys.version.split()[0], sys.platform),
+           "Release mais nova conhecida: %s" % (est.get("ultima_release") or "-"),
+           "Endereco pela internet configurado: %s"
+           % ("sim" if cfg.get("endereco_publico") else "NAO"),
+           "Versoes do app em uso: %s" % (", ".join("%s x%d" % (a["versao_app"], a["n"])
+                                                     for a in apps) or "nenhuma ainda"),
+           "Falhas em aberto: %d" % len(abertas), ""]
+    for f in abertas:
+        out += ["--- Falha #%d | origem: %s | versao: %s | %d ocorrencia(s) | "
+                "primeira %s | ultima %s ---" % (f["id"], f["origem"], f["versao"] or "-",
+                                                  f["ocorrencias"], f["primeira_em"],
+                                                  f["ultima_em"]),
+                f["titulo"], f["detalhe"], ""]
+    out.append("=== FIM DO RELATORIO ===")
+    return "\n".join(out)
+
+
+def _hash_falso():
+    global _HASH_FALSO
+    if _HASH_FALSO is None:
+        _HASH_FALSO = hash_senha(secrets.token_urlsafe(16))
+    return _HASH_FALSO
+
+
 def conferir_credenciais(db, usuario, senha, ip, acao_falha="LOGIN_FALHOU"):
-    """Confere usuario/senha com bloqueio por usuario e por IP. Devolve a linha do usuario."""
+    """Confere usuario/senha com bloqueio por usuario e por IP. Devolve a linha do usuario.
+
+    A tentativa e contada ANTES de verificar a senha: assim tentativas em
+    paralelo nao furam o limite. A verificacao (PBKDF2, lenta) e a espera apos
+    erro ficam FORA da trava global, para um atacante nao travar o login dos
+    demais policiais."""
     with _trava_login:
         if _ip_bloqueado(ip):
             raise Erro(429, "Muitas tentativas erradas a partir desta conexão. "
@@ -364,22 +507,35 @@ def conferir_credenciais(db, usuario, senha, ip, acao_falha="LOGIN_FALHOU"):
             minutos = int((linha["bloqueado_ate"] - time.time()) / 60) + 1
             raise Erro(429, "Usuário bloqueado por excesso de tentativas. "
                             "Tente em %d min." % minutos)
-        if not linha or not linha["ativo"] or not conferir_senha(senha, linha["senha_hash"]):
-            if linha:
-                falhas = linha["falhas"] + 1
-                bloqueio = 0
-                if falhas >= TENTATIVAS_ANTES_BLOQUEIO:
-                    bloqueio = time.time() + MINUTOS_BLOQUEIO * 60
-                    falhas = 0
-                db.execute("UPDATE usuarios SET falhas=?, bloqueado_ate=? WHERE id=?",
-                           (falhas, bloqueio, linha["id"]))
-            _falhas_ip.setdefault(ip, []).append(time.time())
+        marca = time.time()
+        _falhas_ip.setdefault(ip, []).append(marca)
+        if linha:
+            falhas = linha["falhas"] + 1
+            bloqueio = 0
+            if falhas >= TENTATIVAS_ANTES_BLOQUEIO:
+                bloqueio = time.time() + MINUTOS_BLOQUEIO * 60
+                falhas = 0
+            db.execute("UPDATE usuarios SET falhas=?, bloqueado_ate=? WHERE id=?",
+                       (falhas, bloqueio, linha["id"]))
+            db.commit()
+    if linha and linha["ativo"]:
+        correta = conferir_senha(senha, linha["senha_hash"])
+    else:
+        conferir_senha(senha, _hash_falso())
+        correta = False
+    if not correta:
+        with _trava_login:
             auditar(db, usuario, ip, acao_falha)
             db.commit()
-            time.sleep(1)
-            raise Erro(401, "Usuário ou senha incorretos.")
+        time.sleep(1)
+        raise Erro(401, "Usuário ou senha incorretos.")
+    with _trava_login:
+        try:
+            _falhas_ip.get(ip, []).remove(marca)
+        except ValueError:
+            pass
         db.execute("UPDATE usuarios SET falhas=0, bloqueado_ate=0 WHERE id=?", (linha["id"],))
-        return linha
+    return linha
 
 
 # -- operacoes de usuarios (usadas pelo painel e pela linha de comando) -------
@@ -567,6 +723,24 @@ def _versao_no_codigo(codigo):
     return achou.group(1) if achou else ""
 
 
+def conferir_assinatura(somas, assinatura):
+    """Confere SHA256SUMS contra a assinatura ECDSA (usa o openssl do Ubuntu)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for nome, dados in (("chave.pem", CHAVE_PUBLICA_RELEASE.encode()),
+                            ("somas", somas), ("assinatura", assinatura)):
+            with open(os.path.join(tmp, nome), "wb") as f:
+                f.write(dados)
+        try:
+            r = subprocess.run(["openssl", "dgst", "-sha256", "-verify",
+                                os.path.join(tmp, "chave.pem"), "-signature",
+                                os.path.join(tmp, "assinatura"), os.path.join(tmp, "somas")],
+                               capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise ValueError("não foi possível conferir a assinatura (openssl): %s" % e)
+        if r.returncode != 0 or b"Verified OK" not in r.stdout:
+            raise ValueError("assinatura da release inválida: atualização recusada")
+
+
 _trava_atualizacao = threading.Lock()
 
 
@@ -591,13 +765,16 @@ def verificar_atualizacao(forcar=False):
                     and versao_tupla(est.get("baixada")) < versao_tupla(tag):
                 dados = _baixar(assets[ASSET_SERVIDOR], MAX_BYTES_ATUALIZACAO)
                 sha = hashlib.sha256(dados).hexdigest()
-                if assets.get(ASSET_SOMAS):
-                    somas = _baixar(assets[ASSET_SOMAS], 64 * 1024).decode("utf-8", "replace")
-                    esperado = re.search(r"^([0-9a-fA-F]{64})\s+\*?%s\s*$"
-                                         % re.escape(ASSET_SERVIDOR), somas, re.M)
-                    if not esperado or esperado.group(1).lower() != sha:
-                        raise ValueError("o SHA-256 do arquivo baixado não confere com o "
-                                         "SHA256SUMS da release")
+                if not assets.get(ASSET_SOMAS) or not assets.get(ASSET_ASSINATURA):
+                    raise ValueError("a release não tem SHA256SUMS assinado: atualização recusada")
+                somas_bin = _baixar(assets[ASSET_SOMAS], 64 * 1024)
+                conferir_assinatura(somas_bin, _baixar(assets[ASSET_ASSINATURA], 4096))
+                somas = somas_bin.decode("utf-8", "replace")
+                esperado = re.search(r"^([0-9a-fA-F]{64})\s+\*?%s\s*$"
+                                     % re.escape(ASSET_SERVIDOR), somas, re.M)
+                if not esperado or esperado.group(1).lower() != sha:
+                    raise ValueError("o SHA-256 do arquivo baixado não confere com o "
+                                     "SHA256SUMS da release")
                 codigo = dados.decode("utf-8")
                 compile(codigo, ASSET_SERVIDOR, "exec")  # so confere a sintaxe; nao executa
                 nova = _versao_no_codigo(codigo)
@@ -648,7 +825,8 @@ def iniciar_verificador_diario():
             try:
                 verificar_atualizacao()
             except Exception:
-                traceback.print_exc()
+                registrar_falha("atualizacao", "Falha no verificador de atualizacao",
+                                traceback.format_exc(), "", VERSAO)
             time.sleep(1800)
     threading.Thread(target=laco, daemon=True, name="atualizacao").start()
 
@@ -673,6 +851,7 @@ ROTAS = [
     ("DELETE", r"^/api/fotos/" + ID + r"$", "excluir_foto", True),
     ("GET", r"^/api/avisos$", "avisos", True),
     ("POST", r"^/api/avisos/(\d{1,9})/ciente$", "aviso_ciente", True),
+    ("POST", r"^/api/falhas$", "relatar_falha", True),
 ]
 
 
@@ -683,7 +862,10 @@ class Handler(BaseHTTPRequestHandler):
     timeout = 60
 
     def log_message(self, formato, *args):
-        sys.stderr.write("[%s] %s %s\n" % (agora_iso(), self.client_address[0], formato % args))
+        # A linha da requisicao pode ter o termo buscado (nome, CPF, placa):
+        # o log guarda so o caminho, sem a parte depois do "?".
+        linha = re.sub(r"\?\S*", "", limpar_texto(formato % args, 300))
+        sys.stderr.write("[%s] %s %s\n" % (agora_iso(), self.client_address[0], linha))
 
     # -- infraestrutura ----------------------------------------------------
 
@@ -742,7 +924,11 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._json(e.status, {"erro": e.mensagem})
         except Exception:
-            traceback.print_exc()
+            detalhe = traceback.format_exc()
+            sys.stderr.write(limpar_texto(detalhe) + "\n")
+            registrar_falha("servidor", "Erro interno em %s %s" % (
+                metodo, urlparse(self.path).path), detalhe,
+                getattr(self, "_usuario_atual", ""), VERSAO)
             self._descartar_corpo()
             self.close_connection = True
             self._json(500, {"erro": "Erro interno no servidor."})
@@ -793,6 +979,17 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchone()
         if not linha:
             raise Erro(401, "Sessão expirada. Faça login novamente.")
+        self._usuario_atual = linha["usuario"]
+        versao = self.headers.get("X-Keep-Versao", "").strip()
+        if re.fullmatch(r"\d{1,3}(\.\d{1,3}){0,3}", versao):
+            atual = db.execute("SELECT versao_app FROM dispositivos WHERE usuario=?",
+                               (linha["usuario"],)).fetchone()
+            if not atual or atual["versao_app"] != versao:
+                db.execute("INSERT INTO dispositivos (usuario, versao_app, ultima_em) "
+                           "VALUES (?,?,?) ON CONFLICT(usuario) DO UPDATE SET "
+                           "versao_app=excluded.versao_app, ultima_em=excluded.ultima_em",
+                           (linha["usuario"], versao, agora_iso()))
+                db.commit()
         return linha
 
     # -- rotas -------------------------------------------------------------
@@ -858,6 +1055,21 @@ class Handler(BaseHTTPRequestHandler):
             auditar(db, u["usuario"], self.ip, "CIENTE_AVISO", "%s (%s)" % (aid, a["titulo"]))
         db.commit()
         self._json(200, {"ok": True})
+
+    def r_relatar_falha(self, db, u, q):
+        """O app envia aqui erros inesperados (sem dados de fichas)."""
+        dados = self._ler_json()
+        desde = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3600))
+        recentes = db.execute("SELECT COUNT(*) FROM falhas WHERE origem='app' AND usuario=? "
+                              "AND ultima_em > ?", (u["usuario"], desde)).fetchone()[0]
+        if recentes >= MAX_RELATOS_APP_HORA:
+            raise Erro(429, "Limite de relatos por hora atingido.")
+        titulo = str(dados.get("titulo", ""))[:200]
+        detalhe = "Android: %s\n%s" % (str(dados.get("android", ""))[:60],
+                                       str(dados.get("detalhe", ""))[:LIMITE_DETALHE_FALHA * 2])
+        registrar_falha("app", titulo, detalhe, u["usuario"],
+                        str(dados.get("versao_app", ""))[:20], db)
+        self._json(201, {"ok": True})
 
     def r_listar(self, db, u, q):
         termo = normalizar((q.get("q") or [""])[0]).strip()
@@ -1140,6 +1352,20 @@ class ServidorHTTPS(ThreadingHTTPServer):
             super().handle_error(request, client_address)
 
     def finish_request(self, request, client_address):
+        # Limite de conexoes simultaneas: sem ele, centenas de conexoes
+        # paradas (slowloris) esgotariam as threads do servidor.
+        if not _conexoes.acquire(blocking=False):
+            try:
+                request.close()
+            except OSError:
+                pass
+            return
+        try:
+            self._atender(request, client_address)
+        finally:
+            _conexoes.release()
+
+    def _atender(self, request, client_address):
         # O handshake TLS acontece aqui, ja na thread da requisicao, para que
         # um cliente lento nao trave o servidor inteiro.
         request.settimeout(30)
@@ -1222,6 +1448,18 @@ def _e(texto):
     return html.escape("" if texto is None else str(texto), quote=True)
 
 
+def _selo_falhas():
+    try:
+        db = abrir_db()
+        try:
+            n = db.execute("SELECT COUNT(*) FROM falhas WHERE resolvida=0").fetchone()[0]
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return ""
+    return " (%d)" % n if n else ""
+
+
 class HandlerPainel(BaseHTTPRequestHandler):
     server_version = "KeepPolicial-Painel"
     sys_version = ""
@@ -1264,7 +1502,10 @@ class HandlerPainel(BaseHTTPRequestHandler):
             finally:
                 db.close()
         except Exception:
-            traceback.print_exc()
+            detalhe = traceback.format_exc()
+            sys.stderr.write(limpar_texto(detalhe) + "\n")
+            registrar_falha("painel", "Erro interno no painel em %s %s" % (
+                metodo, urlparse(self.path).path), detalhe, "", VERSAO)
             self.close_connection = True
             self._html(500, "Erro interno no painel.")
 
@@ -1334,6 +1575,7 @@ class HandlerPainel(BaseHTTPRequestHandler):
         nav = ""
         if s:
             itens = [("/", "Policiais"), ("/avisos", "Avisos"), ("/auditoria", "Auditoria"),
+                     ("/falhas", "Falhas%s" % _selo_falhas()),
                      ("/atualizacoes", "Atualizações"), ("/config", "Configurações")]
             nav = "".join("<a href='%s'%s>%s</a>" % (h, " class='atual'" if h == atual else "", t)
                           for h, t in itens)
@@ -1395,6 +1637,14 @@ class HandlerPainel(BaseHTTPRequestHandler):
                 self._avisar(s, "ok", "Aviso '%s' %s." % (titulo, "reativado" if ativo
                                                           else "encerrado"))
                 return self._redirecionar("/avisos")
+            if metodo == "GET" and rota == "/falhas":
+                return self._g_falhas(db, s)
+            if metodo == "POST" and rota == "/falhas/resolver":
+                db.execute("UPDATE falhas SET resolvida=1 WHERE resolvida=0")
+                auditar(db, autor, "painel", "RESOLVER_FALHAS", "todas")
+                db.commit()
+                self._avisar(s, "ok", "Falhas marcadas como resolvidas.")
+                return self._redirecionar("/falhas")
             if metodo == "GET" and rota == "/atualizacoes":
                 return self._g_atualizacoes(db, s)
             if metodo == "POST" and rota == "/atualizacoes/verificar":
@@ -1599,7 +1849,8 @@ class HandlerPainel(BaseHTTPRequestHandler):
                 "<button type='button' class='botao sec' onclick=\"gerarSenha('fnovo')\">"
                 "Gerar senha</button></p><p class='dica'>Ao gerar, a senha aparece nos campos: "
                 "anote e entregue ao policial pessoalmente.</p></form></div>" % _e(s["csrf"]))
-        self._enviar(200, self._pagina("Policiais", acesso + tabela + novo, s, "/"))
+        self._enviar(200, self._pagina("Policiais", self._alertas(db, cfg) + acesso + tabela
+                                       + novo, s, "/"))
 
     def _g_editar(self, db, s, uid):
         u = db.execute("SELECT * FROM usuarios WHERE id=?", (uid,)).fetchone()
@@ -1633,6 +1884,73 @@ class HandlerPainel(BaseHTTPRequestHandler):
                  % (_e(u["usuario"]), uid, csrf, _e(u["usuario"]), _e(u["nome"]), opc,
                     uid, _e(u["usuario"]), csrf))
         self._enviar(200, self._pagina("Editar usuário", corpo, s, "/"))
+
+    def _alertas(self, db, cfg):
+        """Avisos de saude do sistema na pagina inicial do painel."""
+        out = []
+        publico = (cfg.get("endereco_publico") or "").strip()
+        if not publico:
+            out.append("<b>Endereço pela internet não configurado.</b> Os celulares só "
+                       "conectam dentro do Wi-Fi do quartel; no 4G não funciona. Preencha em "
+                       "<a href='/config'>Configurações</a> (nome terminado em .ts.net).")
+        elif re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}(:\d+)?", publico):
+            out.append("<b>O endereço pela internet é um número de IP.</b> IPs da rede local "
+                       "(192.168...) não funcionam no 4G. Use o nome .ts.net em "
+                       "<a href='/config'>Configurações</a>.")
+        idade = idade_ultimo_backup_horas()
+        if idade is None:
+            out.append("<b>Ainda não há backup automático.</b> O primeiro é feito poucos "
+                       "minutos após o servidor iniciar. Se esta mensagem continuar, veja "
+                       "<a href='/falhas'>Falhas</a>.")
+        elif idade > 2 * HORAS_ENTRE_BACKUPS:
+            out.append("<b>O último backup tem %d horas.</b> Veja <a href='/falhas'>Falhas</a>."
+                       % idade)
+        alvo = versao_tupla(VERSAO)[:2]
+        antigos = [r["usuario"] + " (" + r["versao_app"] + ")" for r in db.execute(
+            "SELECT d.usuario, d.versao_app FROM dispositivos d JOIN usuarios u "
+            "ON u.usuario = d.usuario WHERE u.ativo = 1")
+            if versao_tupla(r["versao_app"])[:2] < alvo]
+        sem_info = [r["usuario"] for r in db.execute(
+            "SELECT usuario FROM usuarios WHERE ativo = 1 AND usuario NOT IN "
+            "(SELECT usuario FROM dispositivos)")]
+        if antigos:
+            out.append("<b>Aplicativo desatualizado:</b> %s. Peça para abrir o app e "
+                       "instalar a atualização." % _e(", ".join(antigos)))
+        if sem_info:
+            out.append("Sem informação de versão do app (ainda não acessaram com a versão 3.1 "
+                       "ou mais nova): %s." % _e(", ".join(sem_info)))
+        return "".join("<div class='aviso novo'>%s</div>" % t if not t.startswith("Sem inf")
+                       else "<div class='aviso ok' style='background:#EEF1F6;color:#33405A'>%s"
+                            "</div>" % t for t in out)
+
+    def _g_falhas(self, db, s):
+        csrf = "<input type='hidden' name='csrf' value='%s'>" % _e(s["csrf"])
+        abertas = db.execute("SELECT * FROM falhas WHERE resolvida=0 ORDER BY ultima_em DESC "
+                             "LIMIT 100").fetchall()
+        linhas = "".join(
+            "<tr><td>#%d</td><td>%s</td><td>%s</td><td><b>%s</b><pre class='notas'>%s</pre></td>"
+            "<td>%d</td><td class='mono'>%s</td></tr>" % (
+                f["id"], _e(f["origem"]), _e(f["versao"] or "-"), _e(f["titulo"]),
+                _e(f["detalhe"][:1500]), f["ocorrencias"], _e(f["ultima_em"]))
+            for f in abertas)
+        relatorio = relatorio_suporte(db)
+        corpo = ("<div class='cartao'><h2>Falhas registradas</h2>"
+                 "<p class='dica'>O sistema anota aqui erros do servidor e do aplicativo, "
+                 "sem CPF, senhas, nomes de fichas ou endereços. Quando algo der errado, "
+                 "copie o relatório abaixo e envie na conversa de suporte para correção.</p>"
+                 "<label>Relatório para o suporte</label>"
+                 "<textarea id='rel' rows='12' readonly class='mono' style='font-size:12px'>%s"
+                 "</textarea><p class='acoes'><button type='button' class='botao' "
+                 "onclick=\"var t=document.getElementById('rel');t.select();"
+                 "document.execCommand('copy');this.textContent='Copiado!'\">"
+                 "Copiar relatório</button>"
+                 "<form method='post' action='/falhas/resolver' style='margin:0'>%s"
+                 "<button class='botao sec'>Marcar todas como resolvidas</button></form></p>"
+                 "<div class='rolagem'><table><tr><th>Nº</th><th>Origem</th><th>Versão</th>"
+                 "<th>Falha</th><th>Vezes</th><th>Última</th></tr>%s</table></div></div>"
+                 % (_e(relatorio), csrf,
+                    linhas or "<tr><td colspan='6'>Nenhuma falha em aberto. 🎉</td></tr>"))
+        self._enviar(200, self._pagina("Falhas", corpo, s, "/falhas"))
 
     def _g_auditoria(self, db, s, q):
         filtro = (q.get("usuario") or [""])[0].strip().lower()
@@ -1842,7 +2160,16 @@ def cmd_servir():
     print("Ouvindo em https://%s:%s" % (cfg["endereco"], cfg["porta"]))
     print("Código de verificação (1º acesso no celular): " + codigo_verificacao())
     iniciar_painel(cfg)
+    _hash_falso()  # calcula agora, para o 1o login errado nao ser mais lento que os demais
     iniciar_verificador_diario()
+    iniciar_backup_automatico()
+
+    def _excecao_em_thread(args):
+        registrar_falha("servidor", "Excecao em thread %s: %s" % (
+            getattr(args.thread, "name", "?"), args.exc_type.__name__),
+            "".join(traceback.format_exception(args.exc_type, args.exc_value,
+                                               args.exc_traceback)), "", VERSAO)
+    threading.excepthook = _excecao_em_thread
     sys.stdout.flush()
     try:
         servidor.serve_forever()
@@ -1969,11 +2296,12 @@ def cmd_configurar(nome, porta, horas, publico=None):
     print("Reinicie o servidor para aplicar (sudo systemctl restart keeppolicial).")
 
 
-def cmd_backup(destino):
+def fazer_backup(destino=None):
+    """Gera o .tar.gz, confere o banco e o arquivo e devolve o caminho."""
     preparar_dados()
     if not destino:
-        os.makedirs(caminho("backups"), exist_ok=True)
-        destino = caminho("backups", "keeppolicial-backup-%s.tar.gz"
+        os.makedirs(caminho(DIR_BACKUPS), exist_ok=True)
+        destino = caminho(DIR_BACKUPS, "keeppolicial-backup-%s.tar.gz"
                           % datetime.now().strftime("%Y%m%d-%H%M%S"))
     destino = os.path.abspath(destino)
     with tempfile.TemporaryDirectory() as tmp:
@@ -1981,15 +2309,69 @@ def cmd_backup(destino):
         origem = abrir_db()
         alvo = sqlite3.connect(copia)
         origem.backup(alvo)
-        alvo.close()
         origem.close()
+        resultado = alvo.execute("PRAGMA integrity_check").fetchone()[0]
+        alvo.close()
+        if resultado != "ok":
+            raise RuntimeError("Banco com problema de integridade: %s" % resultado)
         with tarfile.open(destino, "w:gz") as tar:
             tar.add(copia, arcname=ARQ_DB)
             tar.add(caminho(DIR_FOTOS), arcname=DIR_FOTOS)
             tar.add(caminho(ARQ_CONFIG), arcname=ARQ_CONFIG)
     os.chmod(destino, 0o600)
+    with tarfile.open(destino, "r:gz") as tar:  # confere que o arquivo le ate o fim
+        nomes = tar.getnames()
+    if ARQ_DB not in nomes:
+        raise RuntimeError("Backup incompleto: falta o banco de dados.")
+    return destino
+
+
+def listar_backups():
+    pasta = caminho(DIR_BACKUPS)
+    try:
+        nomes = sorted(n for n in os.listdir(pasta)
+                       if n.startswith("keeppolicial-backup-") and n.endswith(".tar.gz"))
+    except FileNotFoundError:
+        return []
+    return [os.path.join(pasta, n) for n in nomes]
+
+
+def idade_ultimo_backup_horas():
+    lista = listar_backups()
+    if not lista:
+        return None
+    return (time.time() - os.path.getmtime(lista[-1])) / 3600
+
+
+def iniciar_backup_automatico():
+    """Backup diario automatico; guarda os ultimos BACKUPS_GUARDADOS."""
+    def laco():
+        time.sleep(120)
+        while True:
+            try:
+                idade = idade_ultimo_backup_horas()
+                if idade is None or idade >= HORAS_ENTRE_BACKUPS:
+                    fazer_backup()
+                    for velho in listar_backups()[:-BACKUPS_GUARDADOS]:
+                        os.remove(velho)
+            except Exception:
+                registrar_falha("backup", "Falha no backup automatico",
+                                traceback.format_exc(), "", VERSAO)
+            time.sleep(3600)
+    threading.Thread(target=laco, daemon=True, name="backup").start()
+
+
+def cmd_backup(destino):
+    destino = fazer_backup(destino)
     print("Backup salvo em: " + destino)
     print("ATENÇÃO: o arquivo contém dados sigilosos. Guarde em mídia protegida.")
+
+
+def cmd_falhas():
+    preparar_dados()
+    db = abrir_db()
+    print(relatorio_suporte(db))
+    db.close()
 
 
 def cmd_atualizacao(instalar=False):
@@ -2085,6 +2467,7 @@ def main():
     at.add_argument("--instalar", action="store_true",
                     help="pede a instalação da versão baixada")
 
+    sub.add_parser("falhas", help="relatório de falhas para enviar ao suporte")
     bk = sub.add_parser("backup", help="gera backup .tar.gz dos dados")
     bk.add_argument("destino", nargs="?")
 
@@ -2115,6 +2498,8 @@ def main():
         cmd_auditoria(args.limite, args.usuario)
     elif args.cmd == "configurar":
         cmd_configurar(args.nome, args.porta, args.horas_sessao, args.endereco_publico)
+    elif args.cmd == "falhas":
+        cmd_falhas()
     elif args.cmd == "backup":
         cmd_backup(args.destino)
     elif args.cmd == "atualizacao":

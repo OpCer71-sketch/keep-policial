@@ -55,7 +55,14 @@ final class Fotos {
         Bitmap final_ = Bitmap.createBitmap(original, 0, 0, original.getWidth(), original.getHeight(), m, true);
         // Recodificar em JPEG descarta todos os metadados da foto original.
         ByteArrayOutputStream saida = new ByteArrayOutputStream();
-        final_.compress(Bitmap.CompressFormat.JPEG, 82, saida);
+        int qualidade = 82;
+        final_.compress(Bitmap.CompressFormat.JPEG, qualidade, saida);
+        // Foto pesada no 4G falha mais: reduz ate ficar abaixo de ~700 KB.
+        while (saida.size() > 700_000 && qualidade > 55) {
+            qualidade -= 9;
+            saida.reset();
+            final_.compress(Bitmap.CompressFormat.JPEG, qualidade, saida);
+        }
         if (final_ != original) final_.recycle();
         original.recycle();
         return saida.toByteArray();

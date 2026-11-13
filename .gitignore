@@ -27,3 +27,4 @@ backups/
 Thumbs.db
 __pycache__/
 dist/
+!servidor/chave-publica-release.pem

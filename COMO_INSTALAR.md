@@ -59,7 +59,7 @@ O painel não deixa remover, desativar ou rebaixar o **último administrador ati
 ### Atualização do servidor
 
 O servidor consulta as [Releases do GitHub](https://github.com/OpCer71-sketch/keep-policial/releases) **ao iniciar** e depois **uma vez por dia**.
-Quando há versão nova, ele baixa o arquivo e confere o SHA-256 e a sintaxe. Em seguida, o painel mostra o aviso **Nova versão do servidor baixada** com o botão **Instalar agora**.
+Quando há versão nova, ele baixa o arquivo e confere a **assinatura digital da release**, o SHA-256 e a sintaxe. Release sem a assinatura do mantenedor é **recusada**: mesmo que alguém invada a conta do GitHub, nenhum código falso é instalado. Em seguida, o painel mostra o aviso **Nova versão do servidor baixada** com o botão **Instalar agora**.
 Nada é instalado sem esse clique do administrador.
 
 Ao clicar, o serviço `keeppolicial-atualizar` (root) faz a instalação:
@@ -76,6 +76,18 @@ sudo keeppolicial-atualizar
 
 > **Vindo da versão 2.0:** rode `sudo ./instalar.sh` uma vez com a pasta `servidor` da versão 3.0.
 > Isso instala o serviço de atualização. As próximas versões chegam pelo painel. Os dados e usuários são mantidos.
+
+### Falhas e suporte (versão 3.1)
+
+O servidor anota erros dele e do aplicativo (travamentos, falha de backup, de atualização etc.) em **Falhas** no painel, **sem CPF, senhas, nomes de fichas, IDs ou endereços**.
+Quando algo der errado: abra **Falhas**, clique em **Copiar relatório** e cole na conversa de suporte. Pelo terminal: `sudo keeppolicial falhas`.
+
+A página inicial do painel também avisa sozinha quando: o **endereço pela internet** está vazio ou é um IP; o **backup** está atrasado; ou há celulares com **app desatualizado**.
+
+### Backup automático (versão 3.1)
+
+O servidor faz um backup por dia, confere se o banco está íntegro e guarda os **14 últimos** em `/var/lib/keeppolicial/backups`.
+Esses backups ficam no mesmo computador: copie de vez em quando para um pendrive com `sudo keeppolicial backup /media/$USER/PENDRIVE/backup.tar.gz`.
 
 ### Menu no terminal (alternativa)
 
@@ -302,7 +314,10 @@ O app e o servidor procuram atualização na **última release** do repositório
 |---|---|
 | `KeepPolicial.apk` | atualização do app |
 | `keep_servidor.py` | atualização do servidor |
-| `SHA256SUMS` | conferência dos dois arquivos |
+| `SHA256SUMS` | conferência dos arquivos |
+| `SHA256SUMS.sig` | **assinatura** do SHA256SUMS (sem ela os servidores recusam a atualização) |
+
+O `publicar-release.sh` assina sozinho com a chave `~/.keeppolicial/release-signing.pem` (fica só com o mantenedor; **faça cópia dela junto da chave do app**). A chave pública correspondente está em `servidor/chave-publica-release.pem` e dentro do `keep_servidor.py`.
 
 Antes de publicar, aumente a versão em dois lugares:
 

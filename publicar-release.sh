@@ -41,11 +41,21 @@ sed -i "s/KeepPolicial-[0-9.]*\b/$PASTA/g" "$P/LEIA-ME PRIMEIRO.txt"
 (cd "$TMP/pacote" && zip -qrX "$TMP/KeepPolicial-instalacao.zip" "$PASTA")
 
 (cd "$TMP" && sha256sum KeepPolicial.apk keep_servidor.py KeepPolicial-instalacao.zip > SHA256SUMS && cat SHA256SUMS)
+
+# Assina o SHA256SUMS (os servidores so instalam atualizacao com assinatura valida).
+# A chave privada fica so com o mantenedor: ~/.keeppolicial/release-signing.pem
+CHAVE_REL="${KEEP_ASSINATURA_RELEASE:-$HOME/.keeppolicial/release-signing.pem}"
+[ -f "$CHAVE_REL" ] || { echo "ERRO: chave de assinatura das releases não encontrada em $CHAVE_REL"; exit 1; }
+openssl dgst -sha256 -sign "$CHAVE_REL" -out "$TMP/SHA256SUMS.sig" "$TMP/SHA256SUMS"
+openssl ec -in "$CHAVE_REL" -pubout 2>/dev/null | diff -q - "$RAIZ/servidor/chave-publica-release.pem" >/dev/null \
+    || { echo "ERRO: a chave privada não corresponde a servidor/chave-publica-release.pem"; exit 1; }
+openssl dgst -sha256 -verify "$RAIZ/servidor/chave-publica-release.pem" \
+    -signature "$TMP/SHA256SUMS.sig" "$TMP/SHA256SUMS" >/dev/null && echo "SHA256SUMS assinado e conferido."
 unzip -l "$TMP/KeepPolicial-instalacao.zip"
 
 if [ "$SO_PACOTE" = 1 ]; then
     mkdir -p "$RAIZ/dist"
-    cp "$TMP/KeepPolicial-instalacao.zip" "$TMP/SHA256SUMS" "$RAIZ/dist/"
+    cp "$TMP/KeepPolicial-instalacao.zip" "$TMP/SHA256SUMS" "$TMP/SHA256SUMS.sig" "$RAIZ/dist/"
     echo "Pacote em $RAIZ/dist/"
     exit 0
 fi
@@ -56,4 +66,4 @@ if [ -n "$NOTAS" ]; then ARG_NOTAS=(--notes-file "$NOTAS"); else
     ARG_NOTAS=(--notes "$(git -C "$RAIZ" log -1 --pretty=%B | grep -v '^Co-Authored-By')"); fi
 gh release create "$TAG" --repo OpCer71-sketch/keep-policial --title "Keep Policial ${TAG#v}" \
     "${ARG_NOTAS[@]}" \
-    "$TMP/KeepPolicial.apk" "$TMP/keep_servidor.py" "$TMP/KeepPolicial-instalacao.zip" "$TMP/SHA256SUMS"
+    "$TMP/KeepPolicial.apk" "$TMP/keep_servidor.py" "$TMP/KeepPolicial-instalacao.zip" "$TMP/SHA256SUMS" "$TMP/SHA256SUMS.sig"
