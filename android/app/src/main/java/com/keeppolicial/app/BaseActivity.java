@@ -40,8 +40,22 @@ public abstract class BaseActivity extends Activity {
     }
 
     @Override
+    protected void attachBaseContext(android.content.Context base) {
+        super.attachBaseContext(base);
+        // Tema escolhido (automatico/claro/escuro); o automatico segue o celular.
+        android.content.res.Configuration forcada = Aparencia.sobrescrita(base);
+        if (forcada != null) applyOverrideConfiguration(forcada);
+    }
+
+    @Override
     protected void onCreate(Bundle estado) {
         super.onCreate(estado);
+        Rede.observar(this);
+        if (estado == null) {
+            Diag.i("App", getClass().getSimpleName() + " aberta | v" + BuildConfig.VERSION_NAME
+                    + " | Android " + android.os.Build.VERSION.SDK_INT + " | sessao="
+                    + (Sessao.ativa() ? (Sessao.offline ? "offline" : "online") : "nenhuma"));
+        }
         Falhas.instalar(this);
         // Se o Android fechou o app, recupera a sessao guardada (ate expirar).
         if (!Sessao.ativa()) Sessao.restaurar(this);

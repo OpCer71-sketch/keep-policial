@@ -266,13 +266,31 @@ Ao abrir o app, cada policial vê o aviso numa janela e precisa tocar em **Cient
 - Cada policial vê cada aviso **uma vez**, até tocar em Ciente.
 - **Encerrar** tira o aviso do ar para quem ainda não o viu. **Reativar** o coloca de volta.
 
+### Novidades da versão 3.2
+
+- **Visual tático:** cinza chumbo, preto fosco e verde oliva/coyote; botões e campos maiores para uso em campo.
+  Nos cartões, a **borda e a tarja** mostram a periculosidade: **vermelho** = resistente ativo, **amarelo** = resistente passivo, **verde** = obediente. Aparecem também o status e o selo **CNH VENCIDA**.
+- **Modo escuro:** menu > **Aparência** (automático, claro ou escuro). O escuro usa cinzas profundos e preto para preservar a visão noturna.
+- **Funciona sem internet:** consultar, buscar, criar e editar fichas funciona offline. O que for feito fica numa fila e é enviado sozinho quando a conexão volta. Uma faixa no topo mostra **OFFLINE** e quantas alterações aguardam envio.
+  - Para entrar **sem internet** é preciso já ter entrado antes **com internet** neste celular, e o último acesso com internet deve ter menos de 72 horas.
+  - Se a mesma ficha foi alterada por outra pessoa enquanto você estava offline, **vale a edição que chegar por último**; a versão anterior fica no histórico da ficha.
+  - Alterações que o servidor recusar (ex.: dado inválido) **não somem**: ficam marcadas na faixa vermelha para você corrigir ou descartar.
+- **CNH na ficha:** nº (11 dígitos, confere os dígitos verificadores), categoria (A, B, C, D, E, AB, AC, AD, AE) e validade, com alerta de **vencida** (vermelho) ou **a vencer em 30 dias** (âmbar).
+- **Status operacional:** em acompanhamento, preso, foragido ou inativo.
+- **Filtros avançados** (botão ao lado da busca): periculosidade, status, categoria da CNH, CNH vencida, com veículo, período de cadastro/atualização, envio pendente e ordenação.
+- **Histórico de auditoria** em cada ficha: **quem**, **o que** (criação, consulta, campos alterados), **quando** e de **qual aparelho**. No servidor o registro é **imutável** (o banco recusa alterar ou apagar), inclusive as consultas feitas offline, que chegam na sincronização.
+- **Escanear documento/placa (RG, CPF, CNH, placa):** o botão só aparece quando o motor de leitura está incluído no app.
+
+> **Ordem de atualização (importante):** atualize **primeiro o servidor** (painel > Atualizações > Instalar agora) e **depois** os celulares. O app 3.2 só funciona com servidor 3.2: com servidor antigo ele mostra a faixa vermelha "Servidor desatualizado" e não envia nem baixa nada (o que foi feito fica guardado no aparelho). O app também **não instala a atualização sozinho** enquanto o servidor do destacamento estiver numa versão anterior.
+
 ### Sessão e segurança no celular
 
 - A sessão dura **10 horas** (um turno), mesmo com o app em segundo plano ou fechado pelo Android. O menu mostra até que horas ela vale.
   O botão Voltar só minimiza o app. Para encerrar antes, use **menu > Sair**.
 - A sessão fica guardada **cifrada** com uma chave do Android Keystore. Como quem pegar o celular desbloqueado durante o turno consegue abrir o app, mantenha o **bloqueio de tela** do celular ativo.
 - **Print de tela é permitido.** Prints ficam na galeria do celular: trate-os como material sigiloso e apague-os quando não forem mais necessários.
-- Nenhuma ficha ou foto é gravada pelo app. As fotos tiradas pela câmera vão direto para o servidor, sem passar pela galeria.
+- **Modo offline (3.2):** o app guarda uma cópia das fichas **cifrada** (AES-256, chave do Android Keystore, que não sai do aparelho). Sem a senha e sem este celular, os arquivos não revelam nada. As fotos tiradas pela câmera não passam pela galeria.
+- **Perdeu o celular?** Avise o comandante e **desative o policial no painel**: o servidor deixa de aceitar o login e a cópia do aparelho só abre com a senha do policial, por no máximo **72 horas** desde o último acesso com internet.
 - As fotos têm a localização (GPS) e os outros metadados removidos antes do envio.
 
 ---

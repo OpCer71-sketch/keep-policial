@@ -40,7 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FichaActivity extends BaseActivity {
     static final int MAX_FOTOS = 10;
     static final int MAX_OBS = 200;
-    private static final int REQ_CAMERA = 10, REQ_GALERIA = 11;
+    private static final int REQ_CAMERA = 10, REQ_GALERIA = 11, REQ_SCAN_DOC = 12, REQ_SCAN_PLACA = 13;
     private static final int MENU_SALVAR = 1, MENU_EXCLUIR = 2;
 
     /** Foto ja gravada no servidor (id) ou ainda pendente de envio (jpeg). */
@@ -56,11 +56,19 @@ public class FichaActivity extends BaseActivity {
     private final Set<String> fotosRemovidas = ConcurrentHashMap.newKeySet();
     private String fotografia = "";
     private boolean ocupado;
+    /** Campo de placa que recebera o resultado do escaneamento da placa. */
+    private EditText placaAlvo;
 
     private LinearLayout llFotos, llPassagens, llVeiculos;
-    private TextView tvFotosTitulo, tvContObs, tvRodape;
+    private TextView tvFotosTitulo, tvContObs, tvRodape, tvCnhAlerta;
     private EditText etNome, etAlcunha, etCpf, etRg, etEndereco, etPai, etMae, etObs;
+    private EditText etCnhNumero, etCnhValidade;
     private RadioGroup rgComp;
+    /** Categoria de CNH e status operacional marcados ("" = nenhum). */
+    private String categoria = "", statusOp = "";
+    private final List<TextView> chipsCategoria = new ArrayList<>(), chipsStatus = new ArrayList<>();
+    private static final String[] STATUS_VALORES = {"", "EM_ACOMPANHAMENTO", "PRESO", "FORAGIDO", "INATIVO"};
+    private static final String[] STATUS_ROTULOS = {"Nenhum", "Em acompanhamento", "Preso", "Foragido", "Inativo"};
 
     @Override
     protected void onCreate(Bundle estado) {
@@ -86,7 +94,24 @@ public class FichaActivity extends BaseActivity {
         etMae = findViewById(R.id.etMae);
         etObs = findViewById(R.id.etObservacoes);
         rgComp = findViewById(R.id.rgComportamento);
-
+        etCnhNumero = findViewById(R.id.etCnhNumero);
+        etCnhValidade = findViewById(R.id.etCnhValidade);
+        tvCnhAlerta = findViewById(R.id.tvCnhAlerta);
+        montarChips((android.widget.GridLayout) findViewById(R.id.gradeCategorias),
+                Cnh.CATEGORIAS, Cnh.CATEGORIAS, chipsCategoria, v -> categoria = v, 5);
+        montarChips((android.widget.GridLayout) findViewById(R.id.gradeStatus),
+                STATUS_ROTULOS, STATUS_VALORES, chipsStatus, v -> statusOp = v, 2);
+        etCnhValidade.addTextChangedListener(new Mascara("##/##/####"));
+        etCnhValidade.addTextChangedListener(new Observador(x -> atualizarAlertaCnh()));
+        etCnhNumero.addTextChangedListener(new Observador(x -> {
+            String n = x.toString();
+            etCnhNumero.setError(n.length() == 11 && !Cnh.numeroValido(n)
+                    ? "Dígitos verificadores não conferem" : null);
+        }));
+        findViewById(R.id.btnHistorico).setOnClickListener(v -> startActivity(
+                new Intent(this, HistoricoActivity.class).putExtra("id", id)));
+        findViewById(R.id.secaoHistorico).setVisibility(id == null ? View.GONE : View.VISIBLE);
+        configurarScanner();
         etCpf.addTextChangedListener(new Mascara("###.###.###-##"));
         etObs.addTextChangedListener(new Observador(s ->
                 tvContObs.setText(s.length() + "/" + MAX_OBS)));
@@ -115,15 +140,111 @@ public class FichaActivity extends BaseActivity {
 
     // -- carregar / preencher ----------------------------------------------
 
+    /** Abre a ficha da copia local (funciona offline). So consulta o servidor se nao existir aqui. */
     private void carregar() {
+        JSONObject local = Repositorio.obter(this, id);
+        if (local != null) {
+            preencher(local);
+            Repositorio.registrarConsulta(this, id);
+            return;
+        }
+        if (!Rede.disponivel(this) || Sessao.offline) {
+            toast("Ficha não disponível no aparelho. Conecte-se à internet para baixá-la.");
+            finish();
+            return;
+        }
         final Dialog espera = carregando("Abrindo ficha...");
         emSegundoPlano(() -> Api.obter(id), ficha -> {
             espera.dismiss();
             preencher(ficha);
+            Repositorio.registrarConsulta(this, id);
         }, () -> {
             espera.dismiss();
             finish();
         });
+    }
+
+    // -- CNH / status (selecao rapida) -------------------------------------------------
+
+    interface AoEscolher {
+        void escolheu(String valor);
+    }
+
+    /** Botoes grandes de selecao unica (categoria da CNH e status operacional). */
+    private void montarChips(android.widget.GridLayout grade, String[] rotulos, String[] valores,
+                             final List<TextView> chips, final AoEscolher ao, int colunas) {
+        grade.setColumnCount(colunas);
+        for (int i = 0; i < rotulos.length; i++) {
+            final String valor = valores[i];
+            TextView t = new TextView(this);
+            t.setText(rotulos[i]);
+            t.setGravity(Gravity.CENTER);
+            t.setTextSize(16);
+            t.setTypeface(null, android.graphics.Typeface.BOLD);
+            t.setTag(valor);
+            android.widget.GridLayout.LayoutParams lp = new android.widget.GridLayout.LayoutParams(
+                    android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1f),
+                    android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1f));
+            lp.width = 0;
+            lp.height = dp(52);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            t.setLayoutParams(lp);
+            t.setOnClickListener(v -> {
+                String atual = (String) v.getTag();
+                // tocar de novo na categoria marcada desmarca
+                boolean marcado = chips == chipsCategoria ? atual.equals(categoria) : atual.equals(statusOp);
+                ao.escolheu(marcado && !atual.isEmpty() ? "" : atual);
+                pintarChips();
+            });
+            chips.add(t);
+            grade.addView(t);
+        }
+        pintarChips();
+    }
+
+    private void pintarChips() {
+        for (TextView t : chipsCategoria) pintarChip(t, t.getTag().equals(categoria) && !categoria.isEmpty());
+        for (TextView t : chipsStatus) pintarChip(t, t.getTag().equals(statusOp));
+    }
+
+    private void pintarChip(TextView t, boolean marcado) {
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setCornerRadius(dp(8));
+        g.setColor(getColor(marcado ? R.color.botao : R.color.campo_fundo));
+        g.setStroke(dp(2), getColor(marcado ? R.color.coyote : R.color.borda));
+        t.setBackground(g);
+        t.setTextColor(marcado ? 0xFFFFFFFF : getColor(R.color.texto));
+    }
+
+    /** Alerta visual da validade da CNH: vencida (vermelho), a vencer em 30 dias (ambar) ou valida. */
+    private void atualizarAlertaCnh() {
+        String texto = etCnhValidade.getText().toString().trim();
+        if (texto.isEmpty()) {
+            tvCnhAlerta.setVisibility(View.GONE);
+            return;
+        }
+        if (texto.length() < 10) {
+            tvCnhAlerta.setVisibility(View.GONE);
+            return;
+        }
+        String iso = Cnh.paraIso(texto);
+        if (iso.isEmpty()) {
+            tvCnhAlerta.setText("Data inválida");
+            tvCnhAlerta.setTextColor(getColor(R.color.vencida));
+        } else {
+            long dias = Cnh.diasParaVencer(iso);
+            if (dias < 0) {
+                tvCnhAlerta.setText("⚠ CNH VENCIDA há " + (-dias) + (dias == -1 ? " dia" : " dias"));
+                tvCnhAlerta.setTextColor(getColor(R.color.vencida));
+            } else if (dias <= 30) {
+                tvCnhAlerta.setText("⚠ CNH vence " + (dias == 0 ? "hoje" : "em " + dias + " dias"));
+                tvCnhAlerta.setTextColor(getColor(R.color.alerta));
+            } else {
+                tvCnhAlerta.setText("CNH válida");
+                tvCnhAlerta.setTextColor(getColor(R.color.obediente));
+            }
+        }
+        tvCnhAlerta.setVisibility(View.VISIBLE);
     }
 
     private void preencher(JSONObject f) {
@@ -137,6 +258,13 @@ public class FichaActivity extends BaseActivity {
         etPai.setText(f.optString("pai"));
         etMae.setText(f.optString("mae"));
         etObs.setText(f.optString("observacoes"));
+        etCnhNumero.setText(f.optString("cnh_numero"));
+        etCnhValidade.setText(Cnh.paraTela(f.optString("cnh_validade")));
+        categoria = f.optString("cnh_categoria");
+        statusOp = f.optString("status");
+        pintarChips();
+        atualizarAlertaCnh();
+        findViewById(R.id.secaoHistorico).setVisibility(View.VISIBLE);
         switch (f.optString("comportamento")) {
             case "OBEDIENTE":
                 rgComp.check(R.id.rbObediente);
@@ -266,6 +394,19 @@ public class FichaActivity extends BaseActivity {
     @Override
     protected void onActivityResult(int req, int res, Intent dados) {
         super.onActivityResult(req, res, dados);
+        if (req == REQ_SCAN_DOC || req == REQ_SCAN_PLACA) {
+            final File arq = CameraProvider.arquivo(this);
+            if (res != RESULT_OK || arq.length() == 0) {
+                Diag.w("Camera", "escaneamento sem foto (resultado=" + res + ", bytes=" + arq.length() + ")", null);
+                //noinspection ResultOfMethodCallIgnored
+                arq.delete();
+                // RESULT_CANCELED = o policial desistiu (sem aviso); OK sem arquivo = a camera falhou
+                if (res == RESULT_OK) toast("A câmera não devolveu a foto. Tente de novo.");
+                return;
+            }
+            processarEscaneamento(arq, req == REQ_SCAN_PLACA);
+            return;
+        }
         if (req == REQ_CAMERA) {
             final File arq = CameraProvider.arquivo(this);
             if (res != RESULT_OK || arq.length() == 0) {
@@ -402,6 +543,12 @@ public class FichaActivity extends BaseActivity {
             String n = Veiculos.normalizarPlaca(s.toString());
             if (!n.equals(s.toString())) s.replace(0, s.length(), n);
         }));
+        View btnScan = linha.findViewById(R.id.btnScanPlaca);
+        btnScan.setVisibility(LeitorOcr.disponivel() ? View.VISIBLE : View.GONE);
+        btnScan.setOnClickListener(v -> {
+            placaAlvo = etPlaca;
+            abrirCameraEscaneamento(REQ_SCAN_PLACA);
+        });
         linha.findViewById(R.id.btnRemover).setOnClickListener(v -> {
             boolean vazia = texto(etPlaca).isEmpty() && texto(etModelo).isEmpty()
                     && texto(etMarca).isEmpty() && texto(etCor).isEmpty();
@@ -429,6 +576,166 @@ public class FichaActivity extends BaseActivity {
         return null;
     }
 
+    // -- escanear documento / placa (OCR) ---------------------------------------------
+
+    /** O botao so aparece se o motor de OCR estiver incluido no app. */
+    private void configurarScanner() {
+        View b = findViewById(R.id.btnScanDoc);
+        b.setVisibility(LeitorOcr.disponivel() ? View.VISIBLE : View.GONE);
+        b.setOnClickListener(v -> abrirCameraEscaneamento(REQ_SCAN_DOC));
+        if (LeitorOcr.disponivel()) LeitorOcr.aquecer();
+    }
+
+    private void abrirCameraEscaneamento(int req) {
+        //noinspection ResultOfMethodCallIgnored
+        CameraProvider.arquivo(this).delete();
+        Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        i.putExtra(MediaStore.EXTRA_OUTPUT, CameraProvider.URI);
+        i.setClipData(ClipData.newRawUri("", CameraProvider.URI));
+        i.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            Diag.d("Camera", "abrindo a camera para escanear (" + (req == REQ_SCAN_PLACA ? "placa" : "documento") + ")");
+            startActivityForResult(i, req);
+        } catch (ActivityNotFoundException e) {
+            Diag.e("Camera", "nenhum app de camera instalado", e);
+            alerta("Câmera", "Nenhum aplicativo de câmera encontrado neste celular.");
+        } catch (SecurityException e) {
+            Diag.e("Camera", "permissao negada ao abrir a camera", e);
+            alerta("Câmera", "O aplicativo não tem permissão para abrir a câmera. "
+                    + "Libere em Configurações do Android > Aplicativos > Keep Policial > Permissões.");
+        } catch (RuntimeException e) {
+            Diag.e("Camera", "falha inesperada ao abrir a camera", e);
+            alerta("Câmera", "Não foi possível abrir a câmera. Tente de novo.");
+        }
+    }
+
+    /** Foto -> texto (OCR offline) -> campos. Falhas viram mensagens claras; nada e preenchido sem confirmar. */
+    private void processarEscaneamento(final File arq, final boolean soPlaca) {
+        final Dialog espera = carregando(soPlaca ? "Lendo a placa..." : "Lendo o documento...");
+        EXEC.execute(() -> {
+            byte[] jpeg = null;
+            String erro = null;
+            try {
+                jpeg = Fotos.prepararJpeg(() -> new FileInputStream(arq));
+            } catch (OutOfMemoryError e) {
+                Diag.e("Camera", "memoria insuficiente ao preparar a foto", e);
+                erro = "O celular ficou sem memória para abrir a foto. Feche outros aplicativos e tente de novo.";
+            } catch (Exception e) {
+                Diag.e("Camera", "foto tirada ilegivel", e);
+                erro = "Não foi possível abrir a foto tirada.";
+            } finally {
+                //noinspection ResultOfMethodCallIgnored
+                arq.delete();
+            }
+            if (jpeg == null) {
+                final String msg = erro;
+                ui.post(() -> {
+                    espera.dismiss();
+                    if (!isDestroyed()) alerta("Escanear", msg);
+                });
+                return;
+            }
+            LeitorOcr.ler(getApplicationContext(), jpeg, soPlaca, new LeitorOcr.Ouvinte() {
+                @Override
+                public void texto(LeitorOcr.Leitura leitura) {
+                    final ExtratorDocumento.Resultado r = ExtratorDocumento.extrair(leitura.texto);
+                    ui.post(() -> {
+                        espera.dismiss();
+                        if (isDestroyed()) return;
+                        if (soPlaca) aplicarPlaca(r, leitura);
+                        else confirmarDadosLidos(r, leitura);
+                    });
+                }
+
+                @Override
+                public void erro(String mensagem) {
+                    ui.post(() -> {
+                        espera.dismiss();
+                        if (!isDestroyed()) alerta("Escanear", mensagem
+                                + "\n\nVocê pode digitar os dados manualmente.");
+                    });
+                }
+            });
+        });
+    }
+
+    /** Orientacao para o operador quando a leitura falha (foto escura, tremida ou cortada). */
+    private static String dicaDeLeitura(LeitorOcr.Leitura l) {
+        return (l.escura ? "A foto ficou ESCURA. Acenda a luz, use a lanterna do celular ou aproxime-se de "
+                + "uma fonte de luz.\n\n" : "")
+                + "Dicas: documento inteiro no quadro, câmera parada, sem reflexo.";
+    }
+
+    private void aplicarPlaca(ExtratorDocumento.Resultado r, LeitorOcr.Leitura leitura) {
+        if (r.placa.isEmpty()) {
+            alerta("Placa não reconhecida", "Não foi possível ler a placa.\n\n" + dicaDeLeitura(leitura)
+                    + "\n\nVocê pode digitar a placa manualmente.");
+            return;
+        }
+        if (placaAlvo != null) {
+            placaAlvo.setText(r.placa);
+        } else {
+            adicionarVeiculo(r.placa, "", "", "");  // sem linha de destino: cria o veiculo
+        }
+        toast("Placa lida: " + r.placa + ". Confira.");
+    }
+
+    /** Mostra o que foi lido; o policial marca o que quer aplicar (evita erro de OCR na ficha). */
+    private void confirmarDadosLidos(final ExtratorDocumento.Resultado r, LeitorOcr.Leitura leitura) {
+        if (r.vazio()) {
+            alerta("Nada reconhecido", "Não foi possível ler os dados do documento.\n\n"
+                    + dicaDeLeitura(leitura) + "\n\nVocê pode digitar os dados manualmente.");
+            return;
+        }
+        final List<String> rotulos = new ArrayList<>();
+        final List<Runnable> acoes = new ArrayList<>();
+        adicionarLido(rotulos, acoes, "Nome", r.nome, texto(etNome), () -> etNome.setText(r.nome));
+        adicionarLido(rotulos, acoes, "CPF", r.cpf, texto(etCpf), () -> etCpf.setText(r.cpf));
+        adicionarLido(rotulos, acoes, "RG", r.rg, texto(etRg), () -> etRg.setText(r.rg));
+        adicionarLido(rotulos, acoes, "Pai", r.pai, texto(etPai), () -> etPai.setText(r.pai));
+        adicionarLido(rotulos, acoes, "Mãe", r.mae, texto(etMae), () -> etMae.setText(r.mae));
+        adicionarLido(rotulos, acoes, "Nº da CNH", r.cnhNumero, texto(etCnhNumero),
+                () -> etCnhNumero.setText(r.cnhNumero));
+        adicionarLido(rotulos, acoes, "Categoria CNH", r.cnhCategoria, categoria, () -> {
+            categoria = r.cnhCategoria;
+            pintarChips();
+        });
+        adicionarLido(rotulos, acoes, "Validade CNH", Cnh.paraTela(r.cnhValidade),
+                texto(etCnhValidade), () -> etCnhValidade.setText(Cnh.paraTela(r.cnhValidade)));
+        if (!r.placa.isEmpty()) {
+            adicionarLido(rotulos, acoes, "Placa", r.placa, "", () -> {
+                View linha = adicionarVeiculo(r.placa, "", "", "");
+                linha.requestFocus();
+            });
+        }
+        final boolean[] marcados = new boolean[rotulos.size()];
+        java.util.Arrays.fill(marcados, true);
+        new AlertDialog.Builder(this)
+                .setTitle(leitura.realcada ? "Dados lidos (foto escura, realçada)" : "Dados lidos do documento")
+                .setMultiChoiceItems(rotulos.toArray(new String[0]), marcados,
+                        (d, pos, marcado) -> marcados[pos] = marcado)
+                .setPositiveButton("Preencher", (d, w) -> {
+                    int n = 0;
+                    for (int i = 0; i < acoes.size(); i++) {
+                        if (marcados[i]) {
+                            acoes.get(i).run();
+                            n++;
+                        }
+                    }
+                    toast(n + " campo(s) preenchido(s). Confira antes de salvar.");
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
+    }
+
+    private static void adicionarLido(List<String> rotulos, List<Runnable> acoes, String campo,
+                                      String valor, String atual, Runnable aplicar) {
+        if (valor == null || valor.isEmpty()) return;
+        String extra = !atual.isEmpty() && !atual.equals(valor) ? "  (substitui: " + atual + ")" : "";
+        rotulos.add(campo + ": " + valor + extra);
+        acoes.add(aplicar);
+    }
+
     // -- salvar ----------------------------------------------------------------
 
     private String comportamentoMarcado() {
@@ -451,6 +758,11 @@ public class FichaActivity extends BaseActivity {
             o.put("mae", texto(etMae));
             o.put("comportamento", comportamentoMarcado());
             o.put("observacoes", texto(etObs));
+            o.put("cnh_numero", texto(etCnhNumero));
+            o.put("cnh_categoria", categoria);
+            String validade = texto(etCnhValidade);
+            o.put("cnh_validade", validade.isEmpty() ? "" : Cnh.paraIso(validade));
+            o.put("status", statusOp);
             JSONArray ps = new JSONArray();
             for (int i = 0; i < llPassagens.getChildCount(); i++) {
                 View l = llPassagens.getChildAt(i);
@@ -501,8 +813,30 @@ public class FichaActivity extends BaseActivity {
                     .setTitle("Placa fora do padrão")
                     .setMessage("A placa " + texto(placaRuim) + " não segue o padrão brasileiro "
                             + "(ABC1234 ou ABC1D23). Salvar mesmo assim?")
-                    .setPositiveButton("Salvar", (d, w) -> conferirCpfEEnviar())
+                    .setPositiveButton("Salvar", (d, w) -> conferirCnhEEnviar())
                     .setNegativeButton("Corrigir", (d, w) -> placaRuim.requestFocus())
+                    .show();
+            return;
+        }
+        conferirCnhEEnviar();
+    }
+
+    /** CNH: data valida (bloqueia) e digitos verificadores (pergunta). */
+    private void conferirCnhEEnviar() {
+        String validade = texto(etCnhValidade);
+        if (!validade.isEmpty() && Cnh.paraIso(validade).isEmpty()) {
+            etCnhValidade.setError("Data inválida (dia/mês/ano)");
+            etCnhValidade.requestFocus();
+            return;
+        }
+        String cnh = texto(etCnhNumero);
+        if (!cnh.isEmpty() && !Cnh.numeroValido(cnh)) {
+            new AlertDialog.Builder(this)
+                    .setTitle("CNH inválida")
+                    .setMessage("O número da CNH não confere (11 dígitos e dígitos verificadores). "
+                            + "Salvar mesmo assim?")
+                    .setPositiveButton("Salvar", (d, w) -> conferirCpfEEnviar())
+                    .setNegativeButton("Corrigir", (d, w) -> etCnhNumero.requestFocus())
                     .show();
             return;
         }
@@ -523,58 +857,41 @@ public class FichaActivity extends BaseActivity {
         enviar();
     }
 
+    /**
+     * Salva NO APARELHO e coloca na fila de envio: funciona sem internet e nao perde dados
+     * se a conexao cair. O servidor recebe assim que houver rede (veja Sincronizador).
+     */
     private void enviar() {
         ocupado = true;
         final JSONObject corpo = montarJson();
-        final List<Foto> pendentes = new ArrayList<>();
-        for (Foto f : fotos) if (f.jpeg != null) pendentes.add(f);
+        final List<byte[]> novas = new ArrayList<>();
+        for (Foto f : fotos) if (f.jpeg != null) novas.add(f.jpeg);
         final List<String> remover = new ArrayList<>(fotosRemovidas);
-        final String[] idGravado = {id};
+        final String idAtual = id;
         final Dialog espera = carregando("Salvando...");
-        emSegundoPlano(() -> {
-            JSONObject r = Api.salvar(idGravado[0], corpo);
-            idGravado[0] = r.getString("id");
-            for (String fid : remover) {
-                try {
-                    Api.excluirFoto(fid);
-                } catch (Api.ErroApi e) {
-                    if (e.status != 404) throw e;
-                }
-                fotosRemovidas.remove(fid);
-            }
-            for (Foto f : pendentes) {
-                f.idEnviado = Api.enviarFoto(idGravado[0], f.jpeg);
-            }
-            return Api.obter(idGravado[0]);
-        }, ficha -> {
+        emSegundoPlano(() -> Repositorio.salvar(this, idAtual, corpo, novas, remover), ficha -> {
             espera.dismiss();
             ocupado = false;
+            fotosRemovidas.clear();
             preencher(ficha);
-            toast("Ficha salva.");
+            toast(Rede.disponivel(this) && !Sessao.offline ? "Ficha salva."
+                    : "Ficha salva no aparelho. Será enviada quando houver internet.");
         }, () -> {
-            // Falha parcial: guarda o que ja foi gravado para nao duplicar ao tentar de novo.
             espera.dismiss();
             ocupado = false;
-            id = idGravado[0];
-            for (Foto f : pendentes) {
-                if (f.idEnviado != null) {
-                    f.id = f.idEnviado;
-                    f.jpeg = null;
-                }
-            }
-            desenharFotos();
-            invalidateOptionsMenu();
         });
     }
 
     private void excluir() {
         new AlertDialog.Builder(this)
                 .setTitle("Excluir ficha")
-                .setMessage("Excluir definitivamente esta ficha e todas as suas fotos?")
+                .setMessage("Excluir definitivamente esta ficha e todas as suas fotos?"
+                        + (Rede.disponivel(this) && !Sessao.offline ? ""
+                        : "\n\nSem internet: a exclusão será enviada ao servidor quando a conexão voltar."))
                 .setPositiveButton("Excluir", (d, w) -> {
                     final Dialog espera = carregando("Excluindo...");
                     emSegundoPlano(() -> {
-                        Api.excluir(id);
+                        Repositorio.excluir(this, id);
                         return true;
                     }, ok -> {
                         espera.dismiss();

@@ -10,8 +10,12 @@ android {
         applicationId 'com.keeppolicial.app'
         minSdk 24
         targetSdk 34
-        versionCode 4
-        versionName '3.1'
+        versionCode 5
+        versionName '3.2'
+        // O modelo de OCR e nativo: so celulares (ARM). Corta ~20 MB do APK (menos 4G na atualizacao).
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
     }
 
     buildFeatures {
@@ -56,4 +60,8 @@ android {
 
 dependencies {
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    // OCR 100% offline: o modelo de reconhecimento de texto (alfabeto latino) vai DENTRO do
+    // app (artefato "com.google.mlkit:text-recognition", nao a versao que baixa modelo pelo
+    // Google Play Services). Nao usa internet para ler documentos e placas.
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
 }

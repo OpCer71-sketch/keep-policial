@@ -45,7 +45,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSAO = "3.1.0"
+VERSAO = "3.2.0"
 DADOS = os.environ.get("KEEP_DADOS", "/var/lib/keeppolicial")
 
 ARQ_CONFIG = "config.json"
@@ -103,6 +103,13 @@ LIMITES = {
     "mae": 150,
     "observacoes": 200,
 }
+# Campos novos da 3.2 (ficha)
+CNH_CATEGORIAS = ("", "A", "B", "C", "D", "E", "AB", "AC", "AD", "AE")
+STATUS_OPERACIONAL = ("", "EM_ACOMPANHAMENTO", "PRESO", "FORAGIDO", "INATIVO")
+MAX_CONSULTAS_LOTE = 200
+LIMITE_SYNC = 100
+LIMITE_HISTORICO = 300
+_contexto = threading.local()  # dispositivo do pedido em andamento (para a auditoria)
 LIMITE_REDS = 30
 LIMITE_DESCR_PASSAGEM = 300
 MAX_PASSAGENS = 100
@@ -359,6 +366,44 @@ def abrir_db():
     return db
 
 
+def _colunas(db, tabela):
+    return {r["name"] for r in db.execute("PRAGMA table_info(%s)" % tabela)}
+
+
+def migrar(db):
+    """Atualiza bancos de versoes anteriores sem perder dados (idempotente)."""
+    novas = {
+        "suspeitos": [("cnh_numero", "TEXT NOT NULL DEFAULT ''"),
+                      ("cnh_categoria", "TEXT NOT NULL DEFAULT ''"),
+                      ("cnh_validade", "TEXT NOT NULL DEFAULT ''"),
+                      ("status", "TEXT NOT NULL DEFAULT ''")],
+        "auditoria": [("ficha_id", "TEXT NOT NULL DEFAULT ''"),
+                      ("dispositivo", "TEXT NOT NULL DEFAULT ''")],
+    }
+    for tabela, colunas in novas.items():
+        existentes = _colunas(db, tabela)
+        for nome, tipo in colunas:
+            if nome not in existentes:
+                db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tabela, nome, tipo))
+    # Preenche ficha_id dos registros antigos (o id vinha no inicio de "alvo").
+    # Os gatilhos de imutabilidade sao removidos so durante este preenchimento
+    # (ex.: servidor voltou para a 3.1 e subiu de novo) e recriados logo abaixo.
+    db.execute("DROP TRIGGER IF EXISTS auditoria_sem_alterar")
+    db.execute("DROP TRIGGER IF EXISTS auditoria_sem_apagar")
+    for r in db.execute("SELECT id, alvo FROM auditoria WHERE ficha_id = '' AND alvo <> ''").fetchall():
+        achou = re.match(r"^([0-9a-f]{32})\b", r["alvo"])
+        if achou:
+            db.execute("UPDATE auditoria SET ficha_id=? WHERE id=?", (achou.group(1), r["id"]))
+    db.executescript("""
+    CREATE INDEX IF NOT EXISTS ix_auditoria_ficha ON auditoria(ficha_id, id);
+    CREATE INDEX IF NOT EXISTS ix_suspeitos_atualizado ON suspeitos(atualizado_em, id);
+    CREATE TRIGGER IF NOT EXISTS auditoria_sem_alterar BEFORE UPDATE ON auditoria
+    BEGIN SELECT RAISE(ABORT, 'registro de auditoria e imutavel'); END;
+    CREATE TRIGGER IF NOT EXISTS auditoria_sem_apagar BEFORE DELETE ON auditoria
+    BEGIN SELECT RAISE(ABORT, 'registro de auditoria e imutavel'); END;
+    """)
+
+
 def preparar_dados():
     os.umask(0o077)
     os.makedirs(caminho(DIR_FOTOS), exist_ok=True)
@@ -367,14 +412,21 @@ def preparar_dados():
     db = abrir_db()
     db.execute("PRAGMA journal_mode=WAL")
     db.executescript(ESQUEMA)
+    migrar(db)
     db.commit()
     db.close()
 
 
-def auditar(db, usuario, ip, acao, alvo=""):
+def auditar(db, usuario, ip, acao, alvo="", ficha_id=None):
+    """Grava no registro de auditoria (imutavel: gatilhos do banco impedem alterar/apagar)."""
+    if ficha_id is None:
+        achou = re.match(r"^([0-9a-f]{32})\b", alvo or "")
+        ficha_id = achou.group(1) if achou else ""
     db.execute(
-        "INSERT INTO auditoria (ts, usuario, ip, acao, alvo) VALUES (?,?,?,?,?)",
-        (agora_iso(), usuario, ip, acao, alvo),
+        "INSERT INTO auditoria (ts, usuario, ip, acao, alvo, ficha_id, dispositivo) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (agora_iso(), usuario, ip, acao, alvo, ficha_id,
+         getattr(_contexto, "dispositivo", "") or ""),
     )
 
 
@@ -852,6 +904,9 @@ ROTAS = [
     ("GET", r"^/api/avisos$", "avisos", True),
     ("POST", r"^/api/avisos/(\d{1,9})/ciente$", "aviso_ciente", True),
     ("POST", r"^/api/falhas$", "relatar_falha", True),
+    ("GET", r"^/api/sync$", "sincronizar", True),
+    ("POST", r"^/api/consultas$", "registrar_consultas", True),
+    ("GET", r"^/api/suspeitos/" + ID + r"/historico$", "historico", True),
 ]
 
 
@@ -903,6 +958,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _tratar(self, metodo):
         self._corpo_lido = False
+        # Origem do pedido para a auditoria (modelo do celular informado pelo app).
+        disp = re.sub(r"[^\w .:()/+-]", "", self.headers.get("X-Keep-Dispositivo", ""))[:60]
+        _contexto.dispositivo = disp.strip()
         try:
             url = urlparse(self.path)
             for m, padrao, nome, exige_login in ROTAS:
@@ -1071,9 +1129,77 @@ class Handler(BaseHTTPRequestHandler):
                         str(dados.get("versao_app", ""))[:20], db)
         self._json(201, {"ok": True})
 
+    def r_sincronizar(self, db, u, q):
+        """Fichas alteradas desde o ultimo ponto (para o app guardar copia local).
+
+        apos=<atualizado_em>|<id> pagina por chave; excl=<n> e o ultimo registro de
+        exclusao ja recebido. Quando nao ha mais paginas, o cursor volta 5 s no
+        tempo: alteracoes do mesmo segundo nao se perdem (reenvio e inofensivo)."""
+        apos = (q.get("apos") or [""])[0]
+        ts, _, ultimo_id = apos.partition("|")
+        if ts and not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", ts):
+            raise Erro(400, "Cursor inválido.")
+        try:
+            excl = int((q.get("excl") or ["0"])[0])
+        except ValueError:
+            raise Erro(400, "Cursor inválido.")
+        linhas = db.execute(
+            "SELECT id, atualizado_em FROM suspeitos WHERE atualizado_em > ? OR "
+            "(atualizado_em = ? AND id > ?) ORDER BY atualizado_em, id LIMIT ?",
+            (ts, ts, ultimo_id, LIMITE_SYNC + 1)).fetchall()
+        mais = len(linhas) > LIMITE_SYNC
+        linhas = linhas[:LIMITE_SYNC]
+        fichas = [self._ficha_completa(db, r["id"]) for r in linhas]
+        excluidas = db.execute(
+            "SELECT id, ficha_id FROM auditoria WHERE acao='EXCLUIR_FICHA' AND id > ? "
+            "ORDER BY id LIMIT 500", (excl,)).fetchall()
+        novo_excl = excluidas[-1]["id"] if excluidas else excl
+        mais_exclusoes = len(excluidas) >= 500
+        if mais:
+            cursor = "%s|%s" % (linhas[-1]["atualizado_em"], linhas[-1]["id"])
+        else:
+            recuo = datetime.now().timestamp() - 5
+            cursor = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(recuo)) + "|"
+        self._json(200, {"fichas": fichas, "excluidas": [r["ficha_id"] for r in excluidas],
+                         "cursor": cursor, "excl": novo_excl, "mais": mais or mais_exclusoes,
+                         "agora": agora_iso()})
+
+    def r_registrar_consultas(self, db, u, q):
+        """Consultas feitas no aparelho (inclusive offline): entram na auditoria."""
+        itens = self._ler_json().get("itens")
+        if not isinstance(itens, list) or len(itens) > MAX_CONSULTAS_LOTE:
+            raise Erro(400, "Lista de consultas inválida.")
+        gravadas = 0
+        for it in itens:
+            if not isinstance(it, dict):
+                continue
+            fid = str(it.get("id", ""))
+            quando = re.sub(r"[^0-9 :\-]", "", str(it.get("em", "")))[:19]
+            ficha = db.execute("SELECT nome FROM suspeitos WHERE id = ?", (fid,)).fetchone() \
+                if re.fullmatch(r"[0-9a-f]{32}", fid) else None
+            if not ficha:
+                continue
+            auditar(db, u["usuario"], self.ip, "VER_FICHA",
+                    "%s (%s) | consulta no aparelho em %s" % (fid, ficha["nome"], quando or "?"))
+            gravadas += 1
+        db.commit()
+        self._json(200, {"gravadas": gravadas})
+
+    def r_historico(self, db, u, q, sid):
+        """Registro de auditoria da ficha: quem, o que, quando e de onde."""
+        if not db.execute("SELECT 1 FROM suspeitos WHERE id = ?", (sid,)).fetchone():
+            raise Erro(404, "Ficha não encontrada.")
+        itens = [dict(r) for r in db.execute(
+            "SELECT a.ts, a.usuario, COALESCE(NULLIF(u.nome,''), a.usuario) AS nome, a.acao, "
+            "a.alvo, a.ip, a.dispositivo FROM auditoria a LEFT JOIN usuarios u "
+            "ON u.usuario = a.usuario WHERE a.ficha_id = ? ORDER BY a.id DESC LIMIT ?",
+            (sid, LIMITE_HISTORICO))]
+        self._json(200, {"historico": itens})
+
     def r_listar(self, db, u, q):
         termo = normalizar((q.get("q") or [""])[0]).strip()
         sql = ("SELECT s.id, s.nome, s.alcunha, s.cpf, s.comportamento, s.atualizado_em, "
+               "s.cnh_categoria, s.cnh_validade, s.status, "
                "(SELECT f.id FROM fotos f WHERE f.suspeito_id = s.id ORDER BY f.ordem LIMIT 1) "
                "AS foto_capa, "
                "(SELECT COUNT(*) FROM passagens p WHERE p.suspeito_id = s.id) AS qtd_passagens "
@@ -1101,6 +1227,24 @@ class Handler(BaseHTTPRequestHandler):
         if comp not in COMPORTAMENTOS:
             raise Erro(400, "Comportamento inválido.")
         ficha["comportamento"] = comp
+        # Campos da 3.2: se a chave nao vier (apps antigos), o valor gravado e mantido.
+        if "cnh_numero" in dados:
+            numero = somente_digitos(str(dados.get("cnh_numero") or ""))
+            if len(numero) > 11:
+                raise Erro(400, "O nº da CNH tem no máximo 11 dígitos.")
+            ficha["cnh_numero"] = numero
+        if "cnh_categoria" in dados:
+            cat = str(dados.get("cnh_categoria") or "").strip().upper()
+            if cat not in CNH_CATEGORIAS:
+                raise Erro(400, "Categoria de CNH inválida.")
+            ficha["cnh_categoria"] = cat
+        if "cnh_validade" in dados:
+            ficha["cnh_validade"] = self._data_iso(dados.get("cnh_validade"))
+        if "status" in dados:
+            st = str(dados.get("status") or "").strip().upper()
+            if st not in STATUS_OPERACIONAL:
+                raise Erro(400, "Status operacional inválido.")
+            ficha["status"] = st
         passagens = dados.get("passagens") or []
         if not isinstance(passagens, list) or len(passagens) > MAX_PASSAGENS:
             raise Erro(400, "Lista de passagens inválida.")
@@ -1135,6 +1279,19 @@ class Handler(BaseHTTPRequestHandler):
         ficha["busca"] = ""  # calculado em _gravar_passagens, depois de gravar os veiculos
         return ficha, (lista, lista_v)
 
+    @staticmethod
+    def _data_iso(valor):
+        """Aceita AAAA-MM-DD ou DD/MM/AAAA e devolve AAAA-MM-DD ('' se vazio)."""
+        texto = str(valor or "").strip()
+        if not texto:
+            return ""
+        for formato in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(texto, formato).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+        raise Erro(400, "Data inválida: use dia/mês/ano.")
+
     def _gravar_passagens(self, db, sid, listas, ficha):
         lista, lista_v = listas
         db.execute("DELETE FROM passagens WHERE suspeito_id = ?", (sid,))
@@ -1148,11 +1305,13 @@ class Handler(BaseHTTPRequestHandler):
                            "VALUES (?,?,?,?,?,?)",
                            (sid, i, v["marca"], v["modelo"], v["cor"], v["placa"]))
         veic = db.execute("SELECT placa, modelo FROM veiculos WHERE suspeito_id = ?", (sid,)).fetchall()
+        cnh = db.execute("SELECT cnh_numero FROM suspeitos WHERE id = ?", (sid,)).fetchone()[0]
         busca = " ".join([
             normalizar(ficha["nome"]), normalizar(ficha["alcunha"]),
             somente_digitos(ficha["cpf"]), somente_digitos(ficha["rg"]), normalizar(ficha["rg"]),
             normalizar(ficha["mae"]), " ".join(normalizar(r) for r, _, _ in lista),
             " ".join(normalizar(v["placa"] + " " + v["modelo"]) for v in veic),
+            somente_digitos(cnh),
         ])
         db.execute("UPDATE suspeitos SET busca = ? WHERE id = ?", (busca, sid))
 
@@ -1173,16 +1332,32 @@ class Handler(BaseHTTPRequestHandler):
         return ficha
 
     def r_criar(self, db, u, q):
-        ficha, lista = self._validar_ficha(self._ler_json())
-        sid = uuid.uuid4().hex
+        dados = self._ler_json()
+        ficha, lista = self._validar_ficha(dados)
+        # O app pode criar a ficha offline e informar o id: o reenvio apos uma
+        # falha de rede nao duplica (mesmo id + mesmo autor = devolve a existente).
+        sid = str(dados.get("id") or "")
+        if sid:
+            if not re.fullmatch(r"[0-9a-f]{32}", sid):
+                raise Erro(400, "Identificador inválido.")
+            existe = db.execute("SELECT criado_por FROM suspeitos WHERE id = ?", (sid,)).fetchone()
+            if existe:
+                if existe["criado_por"] != u["usuario"]:
+                    raise Erro(409, "Identificador já utilizado.")
+                return self._json(200, self._ficha_completa(db, sid))
+        else:
+            sid = uuid.uuid4().hex
         agora = agora_iso()
         db.execute(
             "INSERT INTO suspeitos (id, nome, alcunha, cpf, rg, endereco, pai, mae, "
-            "comportamento, observacoes, busca, criado_por, criado_em, atualizado_por, "
-            "atualizado_em) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "comportamento, observacoes, busca, cnh_numero, cnh_categoria, cnh_validade, status, "
+            "criado_por, criado_em, atualizado_por, atualizado_em) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, ficha["nome"], ficha["alcunha"], ficha["cpf"], ficha["rg"], ficha["endereco"],
              ficha["pai"], ficha["mae"], ficha["comportamento"], ficha["observacoes"],
-             ficha["busca"], u["usuario"], agora, u["usuario"], agora))
+             ficha["busca"], ficha.get("cnh_numero", ""), ficha.get("cnh_categoria", ""),
+             ficha.get("cnh_validade", ""), ficha.get("status", ""),
+             u["usuario"], agora, u["usuario"], agora))
         self._gravar_passagens(db, sid, lista, ficha)
         auditar(db, u["usuario"], self.ip, "CRIAR_FICHA", "%s (%s)" % (sid, ficha["nome"]))
         db.commit()
@@ -1194,21 +1369,59 @@ class Handler(BaseHTTPRequestHandler):
         db.commit()
         self._json(200, ficha)
 
+    @staticmethod
+    def _diferencas(antigo, ficha, lista, lista_v):
+        """Resumo do que mudou, para o registro de auditoria (campo: 'antes' -> 'depois')."""
+        partes = []
+        for campo in ("nome", "alcunha", "cpf", "rg", "endereco", "pai", "mae", "comportamento",
+                      "observacoes", "cnh_numero", "cnh_categoria", "cnh_validade", "status"):
+            if ficha.get(campo) is None:
+                continue
+            a, n = str(antigo.get(campo) or ""), str(ficha[campo] or "")
+            if a != n:
+                partes.append("%s: '%s' -> '%s'" % (campo, a[:40], n[:40]))
+        antes = [(p["reds"], p["descricao"], p["data"]) for p in antigo["passagens"]]
+        if antes != list(lista):
+            partes.append("passagens: %d -> %d" % (len(antes), len(lista)))
+        if lista_v is not None:
+            av = [(v["marca"], v["modelo"], v["cor"], v["placa"]) for v in antigo["veiculos"]]
+            nv = [(v["marca"], v["modelo"], v["cor"], v["placa"]) for v in lista_v]
+            if av != nv:
+                partes.append("veiculos: %d -> %d" % (len(av), len(nv)))
+        return "; ".join(partes) or "sem mudança de campos"
+
     def r_atualizar(self, db, u, q, sid):
         if not db.execute("SELECT 1 FROM suspeitos WHERE id = ?", (sid,)).fetchone():
             raise Erro(404, "Ficha não encontrada.")
-        ficha, lista = self._validar_ficha(self._ler_json())
+        dados = self._ler_json()
+        ficha, lista = self._validar_ficha(dados)
+        antigo = self._ficha_completa(db, sid)
+        # Edicao feita offline sobre uma versao que mudou no servidor: vale a mais
+        # recente (a ultima a chegar), mas o conflito e registrado e nada se perde,
+        # pois o registro de auditoria guarda os valores anteriores.
+        base = str(dados.get("base_atualizado_em") or "")
+        conflito = bool(base) and base != antigo["atualizado_em"]
         db.execute(
             "UPDATE suspeitos SET nome=?, alcunha=?, cpf=?, rg=?, endereco=?, pai=?, mae=?, "
-            "comportamento=?, observacoes=?, busca=?, atualizado_por=?, atualizado_em=? "
-            "WHERE id=?",
+            "comportamento=?, observacoes=?, busca=?, "
+            "cnh_numero=COALESCE(?, cnh_numero), cnh_categoria=COALESCE(?, cnh_categoria), "
+            "cnh_validade=COALESCE(?, cnh_validade), status=COALESCE(?, status), "
+            "atualizado_por=?, atualizado_em=? WHERE id=?",
             (ficha["nome"], ficha["alcunha"], ficha["cpf"], ficha["rg"], ficha["endereco"],
              ficha["pai"], ficha["mae"], ficha["comportamento"], ficha["observacoes"],
-             ficha["busca"], u["usuario"], agora_iso(), sid))
+             ficha["busca"], ficha.get("cnh_numero"), ficha.get("cnh_categoria"),
+             ficha.get("cnh_validade"), ficha.get("status"), u["usuario"], agora_iso(), sid))
         self._gravar_passagens(db, sid, lista, ficha)
-        auditar(db, u["usuario"], self.ip, "EDITAR_FICHA", "%s (%s)" % (sid, ficha["nome"]))
+        detalhe = self._diferencas(antigo, ficha, lista[0], lista[1])
+        if conflito:
+            detalhe += (" | CONFLITO: a edição partiu de uma versão anterior; havia alteração de "
+                        "%s em %s" % (antigo["atualizado_por"], antigo["atualizado_em"]))
+        auditar(db, u["usuario"], self.ip, "EDITAR_FICHA_CONFLITO" if conflito else "EDITAR_FICHA",
+                ("%s (%s) | %s" % (sid, ficha["nome"], detalhe))[:1200])
         db.commit()
-        self._json(200, self._ficha_completa(db, sid))
+        resposta = self._ficha_completa(db, sid)
+        resposta["conflito"] = conflito
+        self._json(200, resposta)
 
     def r_excluir(self, db, u, q, sid):
         if u["papel"] != "admin":
@@ -1960,16 +2173,17 @@ class HandlerPainel(BaseHTTPRequestHandler):
             args.append(filtro)
         sql += " ORDER BY id DESC LIMIT 300"
         linhas = "".join(
-            "<tr><td class='mono'>%s</td><td>%s</td><td class='mono'>%s</td><td>%s</td>"
-            "<td><small>%s</small></td></tr>" % (_e(r["ts"]), _e(r["usuario"]), _e(r["ip"]),
-                                                _e(r["acao"]), _e(r["alvo"]))
+            "<tr><td class='mono'>%s</td><td>%s</td><td class='mono'>%s<br><small>%s</small></td>"
+            "<td>%s</td><td><small>%s</small></td></tr>" % (
+                _e(r["ts"]), _e(r["usuario"]), _e(r["ip"]), _e(r["dispositivo"]),
+                _e(r["acao"]), _e(r["alvo"]))
             for r in db.execute(sql, args))
         corpo = ("<div class='cartao'><h2>Registro de acessos (últimos 300)</h2>"
                  "<form method='get' class='acoes' style='margin-bottom:12px'>"
                  "<input name='usuario' value='%s' placeholder='Filtrar por login' "
                  "style='max-width:260px'><button class='botao peq'>Filtrar</button>"
                  "<a class='botao sec peq' href='/auditoria'>Limpar</a></form>"
-                 "<div class='rolagem'><table><tr><th>Data/hora</th><th>Usuário</th><th>IP</th>"
+                 "<div class='rolagem'><table><tr><th>Data/hora</th><th>Usuário</th><th>IP / aparelho</th>"
                  "<th>Ação</th><th>Detalhe</th></tr>%s</table></div></div>"
                  % (_e(filtro), linhas or "<tr><td colspan='5'>Nenhum registro.</td></tr>"))
         self._enviar(200, self._pagina("Auditoria", corpo, s, "/auditoria"))

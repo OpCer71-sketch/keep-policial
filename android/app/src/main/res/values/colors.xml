@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Identidade visual tática (tema claro): Wolf Gray, preto fosco, verde oliva / coyote. -->
 <resources>
-    <color name="primaria">#1B2A4A</color>
-    <color name="primaria_escura">#111C33</color>
-    <color name="destaque">#C9A227</color>
-    <color name="fundo">#ECEFF4</color>
-    <color name="cartao">#FFFFFF</color>
-    <color name="borda">#D5DAE3</color>
-    <color name="texto">#1A1F2B</color>
-    <color name="texto_suave">#5B6475</color>
-    <color name="obediente">#2E7D32</color>
-    <color name="resistente_passivo">#E65100</color>
-    <color name="resistente_ativo">#C62828</color>
+    <color name="primaria">#2B2F33</color>
+    <color name="primaria_escura">#1A1C1E</color>
+    <color name="destaque">#6B7A3A</color>
+    <color name="coyote">#A68B5B</color>
+    <color name="fundo">#E3E4E0</color>
+    <color name="cartao">#F5F5F2</color>
+    <color name="campo_fundo">#EBEBE6</color>
+    <color name="borda">#B9BCB7</color>
+    <color name="texto">#16181A</color>
+    <color name="texto_suave">#555A5E</color>
+    <color name="sobre_primaria">#FFFFFF</color>
+    <color name="botao">#4F5E2A</color>
+    <color name="obediente">#3F7D2A</color>
+    <color name="resistente_passivo">#E0A100</color>
+    <color name="resistente_ativo">#D01C1C</color>
+    <color name="alerta">#B26A00</color>
+    <color name="vencida">#D01C1C</color>
+    <color name="foto_vazia">#B9BCB7</color>
 </resources>

@@ -38,7 +38,12 @@
 
         <!-- Qualificacao -->
         <LinearLayout style="@style/Secao">
-            <TextView style="@style/Rotulo" android:layout_marginTop="0dp" android:text="Nome completo" />
+            <Button
+                android:id="@+id/btnScanDoc"
+                style="@style/BotaoSecundario"
+                android:layout_width="match_parent"
+                android:text="📷  Escanear documento (RG, CPF, CNH)" />
+            <TextView style="@style/Rotulo" android:text="Nome completo" />
             <EditText
                 android:id="@+id/etNome"
                 style="@style/Campo"
@@ -100,6 +105,47 @@
                 android:maxLength="300" />
         </LinearLayout>
 
+        <!-- CNH -->
+        <LinearLayout style="@style/Secao">
+            <TextView
+                style="@style/Rotulo"
+                android:layout_marginTop="0dp"
+                android:text="CNH" />
+            <TextView style="@style/Rotulo" android:layout_marginTop="8dp" android:text="Nº da CNH (registro)" />
+            <EditText
+                android:id="@+id/etCnhNumero"
+                style="@style/Campo"
+                android:digits="0123456789"
+                android:hint="00000000000"
+                android:importantForAutofill="no"
+                android:inputType="number"
+                android:maxLength="11" />
+            <TextView style="@style/Rotulo" android:layout_marginTop="12dp" android:text="Categoria" />
+            <GridLayout
+                android:id="@+id/gradeCategorias"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:columnCount="5" />
+            <TextView style="@style/Rotulo" android:layout_marginTop="12dp" android:text="Data de validade" />
+            <EditText
+                android:id="@+id/etCnhValidade"
+                style="@style/Campo"
+                android:digits="0123456789/"
+                android:hint="dd/mm/aaaa"
+                android:importantForAutofill="no"
+                android:inputType="number"
+                android:maxLength="10" />
+            <TextView
+                android:id="@+id/tvCnhAlerta"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
+
         <!-- Filiacao -->
         <LinearLayout style="@style/Secao">
             <TextView
@@ -138,7 +184,7 @@
                 <RadioButton
                     android:id="@+id/rbObediente"
                     android:layout_width="match_parent"
-                    android:layout_height="44dp"
+                    android:layout_height="56dp"
                     android:text="Obediente"
                     android:textColor="@color/obediente"
                     android:textSize="16sp"
@@ -146,7 +192,7 @@
                 <RadioButton
                     android:id="@+id/rbPassivo"
                     android:layout_width="match_parent"
-                    android:layout_height="44dp"
+                    android:layout_height="56dp"
                     android:text="Resistente passivo"
                     android:textColor="@color/resistente_passivo"
                     android:textSize="16sp"
@@ -154,7 +200,7 @@
                 <RadioButton
                     android:id="@+id/rbAtivo"
                     android:layout_width="match_parent"
-                    android:layout_height="44dp"
+                    android:layout_height="56dp"
                     android:text="Resistente ativo"
                     android:textColor="@color/resistente_ativo"
                     android:textSize="16sp"
@@ -168,6 +214,20 @@
                 android:text="Limpar seleção"
                 android:textColor="@color/texto_suave"
                 android:textSize="13sp" />
+        </LinearLayout>
+
+        <!-- Status operacional -->
+        <LinearLayout style="@style/Secao">
+            <TextView
+                style="@style/Rotulo"
+                android:layout_marginTop="0dp"
+                android:text="STATUS OPERACIONAL" />
+            <GridLayout
+                android:id="@+id/gradeStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:columnCount="2" />
         </LinearLayout>
 
         <!-- Passagens -->
@@ -184,9 +244,8 @@
                 android:orientation="vertical" />
             <Button
                 android:id="@+id/btnAddPassagem"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                style="@style/BotaoSecundario"
+                android:layout_marginTop="10dp"
                 android:text="+ Adicionar passagem" />
         </LinearLayout>
 
@@ -204,9 +263,8 @@
                 android:orientation="vertical" />
             <Button
                 android:id="@+id/btnAddVeiculo"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                style="@style/BotaoSecundario"
+                android:layout_marginTop="10dp"
                 android:text="+ Adicionar veículo" />
         </LinearLayout>
 
@@ -236,15 +294,31 @@
                 android:textSize="12sp" />
         </LinearLayout>
 
+        <!-- Auditoria da ficha -->
+        <LinearLayout style="@style/Secao" android:id="@+id/secaoHistorico">
+            <TextView
+                style="@style/Rotulo"
+                android:layout_marginTop="0dp"
+                android:text="HISTÓRICO DE AUDITORIA" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Quem criou, consultou ou alterou esta ficha, quando e de qual aparelho. O registro não pode ser editado nem apagado."
+                android:textColor="@color/texto_suave"
+                android:textSize="13sp" />
+            <Button
+                android:id="@+id/btnHistorico"
+                style="@style/BotaoSecundario"
+                android:layout_width="match_parent"
+                android:layout_marginTop="10dp"
+                android:text="Ver histórico completo" />
+        </LinearLayout>
+
         <Button
             android:id="@+id/btnSalvar"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
+            style="@style/BotaoTatico"
             android:layout_marginTop="16dp"
-            android:background="@drawable/bg_botao_novo"
-            android:text="Salvar ficha"
-            android:textColor="#FFFFFF"
-            android:textSize="16sp" />
+            android:text="Salvar ficha" />
 
         <TextView
             android:id="@+id/tvRodape"

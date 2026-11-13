@@ -22,7 +22,10 @@
             android:importantForAutofill="no"
             android:inputType="textNoSuggestions|textCapCharacters"
             android:maxLength="8"
-            android:textSize="15sp" />
+            android:minHeight="56dp"
+            android:textColor="@color/texto"
+            android:textColorHint="@color/texto_suave"
+            android:textSize="17sp" />
 
         <AutoCompleteTextView
             android:id="@+id/etCor"
@@ -35,12 +38,24 @@
             android:importantForAutofill="no"
             android:inputType="textCapSentences|textNoSuggestions"
             android:maxLength="30"
-            android:textSize="15sp" />
+            android:minHeight="56dp"
+            android:textColor="@color/texto"
+            android:textColorHint="@color/texto_suave"
+            android:textSize="17sp" />
+
+        <TextView
+            android:id="@+id/btnScanPlaca"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:gravity="center"
+            android:text="📷"
+            android:textSize="22sp"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/btnRemover"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
             android:gravity="center"
             android:text="✕"
             android:textColor="@color/resistente_ativo"
@@ -62,7 +77,10 @@
             android:importantForAutofill="no"
             android:inputType="textCapWords|textNoSuggestions"
             android:maxLength="40"
-            android:textSize="15sp" />
+            android:minHeight="56dp"
+            android:textColor="@color/texto"
+            android:textColorHint="@color/texto_suave"
+            android:textSize="17sp" />
 
         <EditText
             android:id="@+id/etModelo"
@@ -74,6 +92,9 @@
             android:importantForAutofill="no"
             android:inputType="textCapWords|textNoSuggestions"
             android:maxLength="60"
-            android:textSize="15sp" />
+            android:minHeight="56dp"
+            android:textColor="@color/texto"
+            android:textColorHint="@color/texto_suave"
+            android:textSize="17sp" />
     </LinearLayout>
 </LinearLayout>

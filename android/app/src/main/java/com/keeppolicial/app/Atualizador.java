@@ -148,6 +148,16 @@ final class Atualizador {
         if (comparar(tag, BuildConfig.VERSION_NAME) <= 0) {
             return "O aplicativo já está na versão mais recente (" + BuildConfig.VERSION_NAME + ").";
         }
+        // O app novo precisa de um servidor de mesma versao (modo offline/sincronizacao).
+        // Se o servidor deste celular ainda for mais antigo, espera ele ser atualizado.
+        if (Sessao.ativa() && !Sessao.offline) {
+            String vs = Api.versaoDoServidor();
+            if (vs != null && comparar(maiorMenor(tag), maiorMenor(vs)) > 0) {
+                Diag.i("Atualizador", "versao " + tag + " aguarda o servidor (atual " + vs + ")");
+                return "A versão " + tag + " do app só será instalada depois que o servidor "
+                        + "do destacamento for atualizado.";
+            }
+        }
         String urlApk = null, urlSomas = null, nomeApk = null;
         long tamanho = 0;
         JSONArray assets = rel.optJSONArray("assets");
@@ -325,6 +335,12 @@ final class Atualizador {
 
     private static String hoje() {
         return new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(new Date());
+    }
+
+    /** "v3.2.1" -> "3.2" (so versao principal e secundaria). */
+    static String maiorMenor(String v) {
+        int[] n = numeros(v);
+        return n[0] + "." + n[1];
     }
 
     /** Compara "v3.1" com "3.0" numero a numero. */

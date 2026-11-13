@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tema escuro: cinzas profundos e preto, para preservar a visão noturna e reduzir o brilho. -->
+<resources>
+    <color name="primaria">#15171A</color>
+    <color name="primaria_escura">#0B0C0D</color>
+    <color name="destaque">#8A9A52</color>
+    <color name="coyote">#B59A68</color>
+    <color name="fundo">#0E0F11</color>
+    <color name="cartao">#1A1C1F</color>
+    <color name="campo_fundo">#232629</color>
+    <color name="borda">#34383C</color>
+    <color name="texto">#E6E7E3</color>
+    <color name="texto_suave">#9CA1A5</color>
+    <color name="sobre_primaria">#E6E7E3</color>
+    <color name="botao">#4F5E2A</color>
+    <color name="obediente">#5FAE3F</color>
+    <color name="resistente_passivo">#FFB300</color>
+    <color name="resistente_ativo">#FF4B4B</color>
+    <color name="alerta">#FFB300</color>
+    <color name="vencida">#FF4B4B</color>
+    <color name="foto_vazia">#2C2F33</color>
+</resources>

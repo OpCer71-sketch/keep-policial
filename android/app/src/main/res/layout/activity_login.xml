@@ -24,7 +24,7 @@
             android:layout_marginTop="12dp"
             android:gravity="center"
             android:text="Keep Policial"
-            android:textColor="@color/primaria"
+            android:textColor="@color/texto"
             android:textSize="20sp"
             android:textStyle="bold" />
 
@@ -79,19 +79,15 @@
                 android:layout_marginStart="32dp"
                 android:padding="6dp"
                 android:text="Ler o termo"
-                android:textColor="@color/primaria"
+                android:textColor="@color/texto"
                 android:textStyle="bold" />
 
             <Button
                 android:id="@+id/btnEntrar"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
+                style="@style/BotaoTatico"
                 android:layout_marginTop="16dp"
-                android:background="@drawable/bg_botao_novo"
                 android:enabled="false"
-                android:text="Entrar"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp" />
+                android:text="Entrar" />
         </LinearLayout>
 
         <TextView
@@ -101,7 +97,7 @@
             android:layout_marginTop="12dp"
             android:padding="8dp"
             android:text="Servidores salvos"
-            android:textColor="@color/primaria" />
+            android:textColor="@color/texto" />
 
         <TextView
             android:layout_width="match_parent"

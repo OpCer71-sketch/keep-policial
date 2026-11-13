@@ -18,6 +18,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONObject;
 
@@ -249,7 +250,7 @@ public class LoginActivity extends BaseActivity {
         cod.setTextSize(22);
         cod.setGravity(Gravity.CENTER);
         cod.setPadding(0, dp(16), 0, dp(4));
-        cod.setTextColor(getColor(R.color.primaria));
+        cod.setTextColor(getColor(R.color.texto));
         cod.setText(Api.codigoVerificacao(s.impressao));
         l.addView(tv);
         l.addView(cod);
@@ -266,22 +267,53 @@ public class LoginActivity extends BaseActivity {
 
     private void fazerLogin(final Servidor s, final String usuario, final String senha) {
         final Dialog espera = carregando("Entrando...");
-        emSegundoPlano(() -> {
-            Api.login(s, usuario, senha);
-            return true;
-        }, ok -> {
-            espera.dismiss();
-            etSenha.setText("");
-            s.ultimoUsuario = usuario;
-            if (Sessao.destacamento != null && !Sessao.destacamento.isEmpty()) {
-                s.nome = Sessao.destacamento;
+        EXEC.execute(() -> {
+            Exception erro = null;
+            String recusaOffline = null;
+            boolean offline = false;
+            try {
+                Api.login(s, usuario, senha);
+                LoginOffline.registrar(this, s, usuario, senha);
+            } catch (Exception e) {
+                erro = e;
+                // Sem conexao com o servidor: tenta o login offline (so se ja entrou aqui antes).
+                boolean semConexao = !(e instanceof Api.ErroApi) && !(e instanceof Api.ErroCertificado);
+                if (semConexao && LoginOffline.disponivel(this, s, usuario)) {
+                    LoginOffline.Resultado r = LoginOffline.entrar(this, s, usuario, senha);
+                    if (r.ok) {
+                        erro = null;
+                        offline = true;
+                    } else {
+                        recusaOffline = r.mensagem;
+                    }
+                }
             }
-            Servidor.lembrar(this, s);
-            Sessao.guardar(this);
-            abrirFichas();
-        }, () -> {
-            espera.dismiss();
-            etSenha.setText("");
+            final Exception falha = erro;
+            final String recusa = recusaOffline;
+            final boolean modoOffline = offline;
+            ui.post(() -> {
+                espera.dismiss();
+                etSenha.setText("");
+                if (isDestroyed()) return;
+                if (falha != null) {
+                    if (recusa != null) alerta("Atenção", recusa);
+                    else tratarErro(falha);
+                    return;
+                }
+                s.ultimoUsuario = usuario;
+                if (!modoOffline && Sessao.destacamento != null && !Sessao.destacamento.isEmpty()) {
+                    s.nome = Sessao.destacamento;
+                }
+                Servidor.lembrar(this, s);
+                Sessao.guardar(this);
+                Repositorio.aoEntrar(this);
+                if (modoOffline) {
+                    Toast.makeText(this, "Sem conexão: modo offline. As alterações serão "
+                            + "enviadas quando a internet voltar.", Toast.LENGTH_LONG).show();
+                }
+                Sincronizador.agendar(this);
+                abrirFichas();
+            });
         });
     }
 
