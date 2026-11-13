@@ -79,6 +79,7 @@ public class ListaActivity extends BaseActivity {
         if (Sessao.ativa()) {
             carregar();
             buscarAvisos();
+            Falhas.enviarPendente(this);
         }
     }
 

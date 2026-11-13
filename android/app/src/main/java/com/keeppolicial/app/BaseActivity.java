@@ -42,6 +42,7 @@ public abstract class BaseActivity extends Activity {
     @Override
     protected void onCreate(Bundle estado) {
         super.onCreate(estado);
+        Falhas.instalar(this);
         // Se o Android fechou o app, recupera a sessao guardada (ate expirar).
         if (!Sessao.ativa()) Sessao.restaurar(this);
         if (exigeSessao() && !Sessao.ativa()) {

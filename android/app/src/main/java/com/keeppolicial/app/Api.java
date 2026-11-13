@@ -187,7 +187,8 @@ public final class Api {
         HttpUrl url = HttpUrl.get(Sessao.servidor.base() + "/api/suspeitos").newBuilder()
                 .addQueryParameter("q", busca).build();
         Request r = new Request.Builder().url(url)
-                .header("Authorization", "Bearer " + Sessao.token).build();
+                .header("Authorization", "Bearer " + Sessao.token)
+                .header("X-Keep-Versao", BuildConfig.VERSION_NAME).build();
         return json(r).optJSONArray("suspeitos");
     }
 
@@ -208,10 +209,47 @@ public final class Api {
         executar(autenticado("/api/suspeitos/" + id).delete().build()).close();
     }
 
+    /**
+     * Envia a foto. No 4G a conexao oscila: tempos maiores e ate 3 tentativas
+     * para falhas de rede (erros de resposta do servidor nao sao repetidos).
+     */
     static String enviarFoto(String idSuspeito, byte[] jpeg) throws IOException {
-        Request r = autenticado("/api/suspeitos/" + idSuspeito + "/fotos")
-                .post(RequestBody.create(jpeg, JPEG)).build();
-        return json(r).optString("id");
+        OkHttpClient lento = Sessao.cliente.newBuilder()
+                .writeTimeout(150, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).build();
+        IOException ultimo = null;
+        for (int tentativa = 1; tentativa <= 3; tentativa++) {
+            try {
+                Request r = autenticado("/api/suspeitos/" + idSuspeito + "/fotos")
+                        .post(RequestBody.create(jpeg, JPEG)).build();
+                return json(lento, r, Sessao.servidor).optString("id");
+            } catch (ErroApi e) {
+                throw e;
+            } catch (IOException e) {
+                ultimo = e;
+                try {
+                    Thread.sleep(1500L * tentativa);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        throw ultimo != null ? ultimo : new IOException("Falha ao enviar a foto.");
+    }
+
+    /** Relato de erro inesperado do app (sem dados de fichas) para o suporte. */
+    static void relatarFalha(String titulo, String detalhe) throws IOException {
+        JSONObject corpo = new JSONObject();
+        try {
+            corpo.put("titulo", titulo).put("detalhe", detalhe)
+                    .put("versao_app", BuildConfig.VERSION_NAME)
+                    .put("android", "Android " + android.os.Build.VERSION.RELEASE + " / "
+                            + android.os.Build.MODEL);
+        } catch (JSONException e) {
+            throw new IOException(e);
+        }
+        executar(autenticado("/api/falhas").post(RequestBody.create(corpo.toString(), JSON))
+                .build()).close();
     }
 
     static byte[] baixarFoto(String idFoto) throws IOException {
@@ -240,7 +278,8 @@ public final class Api {
     private static Request.Builder autenticado(String caminho) throws IOException {
         if (!Sessao.ativa()) throw new ErroApi(401, "Sessão encerrada. Faça login novamente.");
         return new Request.Builder().url(Sessao.servidor.base() + caminho)
-                .header("Authorization", "Bearer " + Sessao.token);
+                .header("Authorization", "Bearer " + Sessao.token)
+                .header("X-Keep-Versao", BuildConfig.VERSION_NAME);
     }
 
     private static Response executar(Request r) throws IOException {
