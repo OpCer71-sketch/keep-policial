@@ -38,6 +38,10 @@ cp "$TMP/KeepPolicial.apk" "$RAIZ/LEIA-ME PRIMEIRO.txt" "$RAIZ/COMO_INSTALAR.md"
 [ -f "$RAIZ/ATUALIZAR_SERVIDOR_${TAG#v}.md" ] && cp "$RAIZ/ATUALIZAR_SERVIDOR_${TAG#v}.md" "$P/"
 ls "$RAIZ"/ATUALIZAR_SERVIDOR_*.md >/dev/null 2>&1 && cp "$RAIZ"/ATUALIZAR_SERVIDOR_*.md "$P/"
 sed -i "s/KeepPolicial-[0-9.]*\b/$PASTA/g" "$P/LEIA-ME PRIMEIRO.txt"
+# O passo a passo para leigos tambem deve citar a versao e a pasta deste pacote.
+for f in "$P"/ATUALIZAR_SERVIDOR_*.md; do
+    [ -f "$f" ] && sed -i "s/KeepPolicial-[0-9.]*\b/$PASTA/g; s/versão 3\.0/versão ${TAG#v}/g" "$f"
+done
 (cd "$TMP/pacote" && zip -qrX "$TMP/KeepPolicial-instalacao.zip" "$PASTA")
 
 (cd "$TMP" && sha256sum KeepPolicial.apk keep_servidor.py KeepPolicial-instalacao.zip > SHA256SUMS && cat SHA256SUMS)
