@@ -22,7 +22,10 @@
             android:importantForAutofill="no"
             android:inputType="textNoSuggestions|textCapCharacters"
             android:maxLength="30"
-            android:textSize="15sp" />
+            android:minHeight="56dp"
+            android:textColor="@color/texto"
+            android:textColorHint="@color/texto_suave"
+            android:textSize="17sp" />
 
         <EditText
             android:id="@+id/etData"
@@ -35,12 +38,15 @@
             android:importantForAutofill="no"
             android:inputType="number"
             android:maxLength="10"
-            android:textSize="15sp" />
+            android:minHeight="56dp"
+            android:textColor="@color/texto"
+            android:textColorHint="@color/texto_suave"
+            android:textSize="17sp" />
 
         <TextView
             android:id="@+id/btnRemover"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
             android:gravity="center"
             android:text="✕"
             android:textColor="@color/resistente_ativo"
@@ -55,5 +61,8 @@
         android:importantForAutofill="no"
         android:inputType="textMultiLine|textCapSentences"
         android:maxLength="300"
-        android:textSize="15sp" />
+        android:minHeight="56dp"
+            android:textColor="@color/texto"
+            android:textColorHint="@color/texto_suave"
+            android:textSize="17sp" />
 </LinearLayout>

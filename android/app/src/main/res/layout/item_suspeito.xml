@@ -1,22 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Cartão do suspeito. A borda e a tarja mudam de cor conforme o comportamento
+     (vermelho = resistente ativo, amarelo = passivo, verde = obediente); ver ListaActivity. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/cartaoRaiz"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="@drawable/bg_cartao"
     android:orientation="vertical"
-    android:padding="1dp">
+    android:padding="3dp">
 
-    <ImageView
-        android:id="@+id/ivFoto"
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="150dp"
-        android:scaleType="centerCrop"
-        android:src="@drawable/sem_foto" />
+        android:layout_height="150dp">
+
+        <ImageView
+            android:id="@+id/ivFoto"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:src="@drawable/sem_foto" />
+
+        <TextView
+            android:id="@+id/tvComportamento"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:paddingStart="10dp"
+            android:paddingTop="5dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="5dp"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvAlertaCnh"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_margin="6dp"
+            android:paddingStart="8dp"
+            android:paddingTop="3dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="3dp"
+            android:text="CNH VENCIDA"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+    </FrameLayout>
 
     <View
         android:id="@+id/vFaixa"
         android:layout_width="match_parent"
-        android:layout_height="4dp" />
+        android:layout_height="8dp" />
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -31,7 +67,7 @@
             android:ellipsize="end"
             android:maxLines="2"
             android:textColor="@color/texto"
-            android:textSize="15sp"
+            android:textSize="16sp"
             android:textStyle="bold" />
 
         <TextView
@@ -45,10 +81,11 @@
             android:textStyle="italic" />
 
         <TextView
-            android:id="@+id/tvComportamento"
+            android:id="@+id/tvStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
+            android:textColor="@color/coyote"
             android:textSize="12sp"
             android:textStyle="bold" />
 

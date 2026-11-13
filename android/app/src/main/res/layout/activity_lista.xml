@@ -8,18 +8,58 @@
         android:layout_height="match_parent"
         android:orientation="vertical">
 
-        <EditText
-            android:id="@+id/etBusca"
+        <!-- Faixa de conexão / pendências de sincronização -->
+        <TextView
+            android:id="@+id/tvSincronia"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
+            android:background="@color/alerta"
+            android:gravity="center"
+            android:padding="8dp"
+            android:textColor="#101010"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:layout_margin="12dp"
-            android:background="@drawable/bg_cartao"
-            android:hint="Buscar por nome, alcunha, CPF, RG, mãe, REDS ou placa"
-            android:importantForAutofill="no"
-            android:inputType="textNoSuggestions"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:textSize="15sp" />
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/etBusca"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_cartao"
+                android:hint="Nome, alcunha, CPF, RG, CNH, REDS, placa"
+                android:importantForAutofill="no"
+                android:inputType="textNoSuggestions"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:textColor="@color/texto"
+                android:textColorHint="@color/texto_suave"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnFiltros"
+                style="@style/BotaoSecundario"
+                android:layout_marginStart="8dp"
+                android:text="Filtros" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvFiltros"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="14dp"
+            android:layout_marginEnd="14dp"
+            android:layout_marginBottom="6dp"
+            android:textColor="@color/coyote"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/tvVazio"
@@ -28,7 +68,7 @@
             android:layout_marginTop="32dp"
             android:gravity="center"
             android:textColor="@color/texto_suave"
-            android:textSize="15sp"
+            android:textSize="16sp"
             android:visibility="gone" />
 
         <ProgressBar
@@ -49,22 +89,20 @@
             android:numColumns="2"
             android:paddingStart="12dp"
             android:paddingEnd="12dp"
-            android:paddingBottom="88dp"
+            android:paddingBottom="104dp"
             android:stretchMode="columnWidth"
             android:verticalSpacing="10dp" />
     </LinearLayout>
 
     <Button
         android:id="@+id/btnNova"
+        style="@style/BotaoTatico"
         android:layout_width="wrap_content"
-        android:layout_height="56dp"
+        android:layout_height="64dp"
         android:layout_gravity="bottom|end"
         android:layout_margin="16dp"
-        android:background="@drawable/bg_botao_novo"
         android:elevation="6dp"
-        android:paddingStart="24dp"
-        android:paddingEnd="24dp"
-        android:text="+  Nova ficha"
-        android:textColor="#FFFFFF"
-        android:textSize="16sp" />
+        android:paddingStart="28dp"
+        android:paddingEnd="28dp"
+        android:text="+  Nova ficha" />
 </FrameLayout>

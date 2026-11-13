@@ -24,14 +24,23 @@ import java.util.List;
 /** Quadro de fichas (estilo bloco de notas): cada cartao e um suspeito. */
 public class ListaActivity extends BaseActivity {
     private static final int MENU_ATUALIZAR = 1, MENU_SESSAO = 2, MENU_SAIR = 3, MENU_IMPORTAR = 4,
-            MENU_VERSAO = 5, MENU_ATUALIZACAO = 6;
+            MENU_VERSAO = 5, MENU_ATUALIZACAO = 6, MENU_APARENCIA = 7, MENU_PENDENCIAS = 8, MENU_DIAGNOSTICO = 9;
     private static final int REQ_IMPORTAR = 20;
 
     private final List<JSONObject> fichas = new ArrayList<>();
+    private final Repositorio.Filtro filtro = new Repositorio.Filtro();
+    private java.util.Set<String> comPendencia = new java.util.HashSet<>();
     private Adaptador adaptador;
     private EditText etBusca;
-    private TextView tvVazio;
+    private TextView tvVazio, tvSincronia, tvFiltros;
     private View progresso;
+    /** Atualiza a lista e a faixa de estado quando a sincronizacao progride. */
+    private final Sincronizador.Ouvinte aoSincronizar = () -> ui.post(() -> {
+        if (isFinishing() || isDestroyed()) return;
+        atualizarFaixa();
+        carregar();
+        mostrarAvisosDeSincronia();
+    });
     private int geracao;
     private final Runnable buscar = this::carregar;
     /** Ha um aviso do administrador na tela (evita abrir dois ao mesmo tempo). */
@@ -47,13 +56,22 @@ public class ListaActivity extends BaseActivity {
             getActionBar().setSubtitle(Sessao.nome);
         }
         etBusca = findViewById(R.id.etBusca);
+        tvSincronia = findViewById(R.id.tvSincronia);
+        tvFiltros = findViewById(R.id.tvFiltros);
+        findViewById(R.id.btnFiltros).setOnClickListener(v ->
+                FiltrosDialog.mostrar(this, filtro, this::carregar));
+        tvSincronia.setOnClickListener(v -> aoTocarFaixa());
         tvVazio = findViewById(R.id.tvVazio);
         progresso = findViewById(R.id.progresso);
         GridView grade = findViewById(R.id.grade);
         adaptador = new Adaptador();
         grade.setAdapter(adaptador);
-        grade.setOnItemClickListener((p, v, pos, id) -> startActivity(
-                new Intent(this, FichaActivity.class).putExtra("id", fichas.get(pos).optString("id"))));
+        grade.setOnItemClickListener((p, v, pos, id) -> {
+            if (pos >= 0 && pos < fichas.size()) {
+                startActivity(new Intent(this, FichaActivity.class)
+                        .putExtra("id", fichas.get(pos).optString("id")));
+            }
+        });
         findViewById(R.id.btnNova).setOnClickListener(v ->
                 startActivity(new Intent(this, FichaActivity.class)));
         etBusca.addTextChangedListener(new TextWatcher() {
@@ -77,10 +95,118 @@ public class ListaActivity extends BaseActivity {
     protected void onResume() {
         super.onResume();
         if (Sessao.ativa()) {
+            Sincronizador.ouvir(aoSincronizar);
             carregar();
-            buscarAvisos();
-            Falhas.enviarPendente(this);
+            atualizarFaixa();
+            Sincronizador.agendar(this);
+            if (!Sessao.offline) {
+                buscarAvisos();
+                Falhas.enviarPendente(this);
+            }
+            avisarPerdaDeDados();
         }
+    }
+
+    @Override
+    protected void onPause() {
+        Sincronizador.deixarDeOuvir(aoSincronizar);
+        super.onPause();
+    }
+
+    // -- faixa de estado (offline / pendencias) ---------------------------------------
+
+    private void atualizarFaixa() {
+        if (!Sessao.ativa()) return;
+        ArmazemLocal a = ArmazemLocal.get(this);
+        String dono = Repositorio.dono();
+        int pend = a.contarPendentes(dono), erros = a.contarComErro(dono);
+        boolean semRede = Sessao.offline || !Rede.disponivel(this);
+        if (Sincronizador.servidorAntigo) {
+            tvSincronia.setText("⚠ Servidor desatualizado (precisa da versão 3.2). Toque para saber mais.");
+            tvSincronia.setBackgroundColor(getColor(R.color.resistente_ativo));
+            tvSincronia.setTextColor(0xFFFFFFFF);
+        } else if (erros > 0) {
+            tvSincronia.setText("⚠ " + erros + (erros == 1 ? " alteração recusada" : " alterações recusadas")
+                    + " pelo servidor. Toque para ver.");
+            tvSincronia.setBackgroundColor(getColor(R.color.resistente_ativo));
+            tvSincronia.setTextColor(0xFFFFFFFF);
+        } else if (semRede) {
+            tvSincronia.setText("OFFLINE" + (pend > 0 ? " — " + pend + " aguardando envio" : "")
+                    + (Sessao.offline && Rede.disponivel(this) ? " — toque para entrar e sincronizar" : ""));
+            tvSincronia.setBackgroundColor(getColor(R.color.alerta));
+            tvSincronia.setTextColor(0xFF101010);
+        } else if (pend > 0) {
+            tvSincronia.setText((Sincronizador.sincronizando ? "Sincronizando… " : "")
+                    + pend + " aguardando envio");
+            tvSincronia.setBackgroundColor(getColor(R.color.alerta));
+            tvSincronia.setTextColor(0xFF101010);
+        } else {
+            tvSincronia.setVisibility(View.GONE);
+            return;
+        }
+        tvSincronia.setVisibility(View.VISIBLE);
+    }
+
+    private void aoTocarFaixa() {
+        ArmazemLocal a = ArmazemLocal.get(this);
+        if (Sincronizador.servidorAntigo) {
+            alerta("Servidor desatualizado", Sincronizador.MSG_SERVIDOR_ANTIGO);
+        } else if (a.contarComErro(Repositorio.dono()) > 0) {
+            mostrarPendenciasComErro();
+        } else if (Sessao.offline && Rede.disponivel(this)) {
+            // A sessao offline nao tem token: entrar de novo com internet.
+            Api.encerrarSessao(this);
+            startActivity(new Intent(this, LoginActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
+            finish();
+        } else {
+            Sincronizador.agendar(this);
+            toast(Sincronizador.ultimoErro != null ? Sincronizador.ultimoErro : "Sincronizando...");
+        }
+    }
+
+    private void mostrarPendenciasComErro() {
+        final ArmazemLocal a = ArmazemLocal.get(this);
+        StringBuilder sb = new StringBuilder();
+        final List<Long> ids = new ArrayList<>();
+        for (ArmazemLocal.Op o : a.fila(Repositorio.dono())) {
+            if (!o.permanente) continue;
+            ids.add(o.seq);
+            JSONObject f = a.ficha(o.fichaId);
+            sb.append("• ").append(f != null && !f.optString("nome").isEmpty()
+                    ? f.optString("nome") : "(ficha)").append(" — ").append(o.tipo)
+                    .append("\n   ").append(o.erro).append("\n");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Alterações recusadas")
+                .setView(textoRolavel(sb + "\nO que foi recusado fica guardado aqui e NÃO é reenviado. "
+                        + "Corrija a ficha e salve de novo, ou descarte."))
+                .setPositiveButton("Descartar todas", (d, w) -> {
+                    for (long seq : ids) a.removerOp(seq);
+                    atualizarFaixa();
+                })
+                .setNegativeButton("Fechar", null)
+                .show();
+    }
+
+    private void mostrarAvisosDeSincronia() {
+        for (String m : Sincronizador.pegarAvisos()) toast(m);
+    }
+
+    private void avisarPerdaDeDados() {
+        ArmazemLocal a = ArmazemLocal.get(this);
+        if (!a.perdaDetectada()) return;
+        a.limparAvisoPerda();
+        new AlertDialog.Builder(this)
+                .setTitle("Dados do aparelho recarregados")
+                .setMessage("Os dados guardados neste celular não puderam ser lidos (isso acontece, "
+                        + "por exemplo, ao restaurar o aparelho). As fichas serão baixadas do "
+                        + "servidor de novo."
+                        + (a.perdidas() > 0 ? "\n\nATENÇÃO: " + a.perdidas() + " alteração(ões) "
+                        + "feita(s) offline e ainda não enviada(s) foram perdidas. Confira as fichas "
+                        + "e refaça o que faltar." : ""))
+                .setPositiveButton("OK", (d, w) -> Sincronizador.agendar(this))
+                .show();
     }
 
     // -- avisos do administrador (pop-up) ----------------------------------------------
@@ -134,21 +260,40 @@ public class ListaActivity extends BaseActivity {
                 .show();
     }
 
+    /** Le da copia local (busca + filtros): instantaneo e funciona sem internet. */
     private void carregar() {
+        if (!Sessao.ativa()) return;
         final int minha = ++geracao;
-        final String termo = etBusca.getText().toString().trim();
+        filtro.termo = etBusca.getText().toString().trim();
+        final String termo = filtro.termo;
+        final Repositorio.Filtro copia = filtro;
         if (fichas.isEmpty()) progresso.setVisibility(View.VISIBLE);
-        emSegundoPlano(() -> Api.listar(termo), lista -> {
+        emSegundoPlano(() -> {
+            List<JSONObject> lista = Repositorio.listar(this, copia);
+            comPendencia = ArmazemLocal.get(this).fichasComFila(Repositorio.dono());
+            return lista;
+        }, lista -> {
             if (minha != geracao) return;
             progresso.setVisibility(View.GONE);
             fichas.clear();
-            JSONArray a = lista != null ? lista : new JSONArray();
-            for (int i = 0; i < a.length(); i++) fichas.add(a.optJSONObject(i));
+            fichas.addAll(lista);
             adaptador.notifyDataSetChanged();
+            String resumo = FiltrosDialog.resumo(filtro);
+            tvFiltros.setText("Filtros: " + resumo);
+            tvFiltros.setVisibility(resumo.isEmpty() ? View.GONE : View.VISIBLE);
             if (fichas.isEmpty()) {
-                tvVazio.setText(termo.isEmpty()
+                // "Baixando..." so enquanto a 1a sincronizacao deste usuario ainda nao terminou.
+                boolean primeiraVez = ArmazemLocal.get(this).meta("ultima_sync") == null;
+                boolean sincronizandoVazio = ArmazemLocal.get(this).quantidade() == 0
+                        && !Sincronizador.servidorAntigo && primeiraVez
+                        && (Sincronizador.sincronizando || Rede.disponivel(this));
+                tvVazio.setText(Sincronizador.servidorAntigo && ArmazemLocal.get(this).quantidade() == 0
+                        ? "Este servidor ainda não está na versão 3.2.\nPeça ao comandante para atualizar o servidor."
+                        : sincronizandoVazio
+                        ? "Baixando as fichas do servidor..."
+                        : termo.isEmpty() && filtro.ativos() == 0
                         ? "Nenhuma ficha cadastrada.\nToque em \"+ Nova ficha\" para começar."
-                        : "Nada encontrado para \"" + termo + "\".");
+                        : "Nada encontrado com a busca e os filtros atuais.");
                 tvVazio.setVisibility(View.VISIBLE);
             } else {
                 tvVazio.setVisibility(View.GONE);
@@ -158,13 +303,15 @@ public class ListaActivity extends BaseActivity {
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        menu.add(0, MENU_ATUALIZAR, 0, "Atualizar");
+        menu.add(0, MENU_ATUALIZAR, 0, "Sincronizar agora");
+        menu.add(0, MENU_APARENCIA, 1, "Aparência: " + Aparencia.rotulo(Aparencia.modo(this)));
         if (Sessao.admin()) menu.add(0, MENU_IMPORTAR, 1, "Importar fichas (planilha ou JSON)");
         menu.add(0, MENU_SESSAO, 2, "Sessão válida até "
                 + new java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
                 .format(new java.util.Date(Sessao.expiraEm))).setEnabled(false);
         menu.add(0, MENU_SAIR, 3, "Sair (encerrar sessão)");
         menu.add(0, MENU_ATUALIZACAO, 4, "Verificar atualização do app");
+        menu.add(0, MENU_DIAGNOSTICO, 4, "Diagnóstico (registro de eventos)");
         menu.add(0, MENU_VERSAO, 5, "Keep Policial - versão " + BuildConfig.VERSION_NAME)
                 .setEnabled(false);
         return true;
@@ -262,6 +409,7 @@ public class ListaActivity extends BaseActivity {
         })), rel -> {
             getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             espera.dismiss();
+            Sincronizador.agendar(this);
             StringBuilder sb = new StringBuilder();
             if (rel.interrompido != null) {
                 sb.append("A importação foi INTERROMPIDA: ").append(rel.interrompido)
@@ -286,6 +434,49 @@ public class ListaActivity extends BaseActivity {
         });
     }
 
+    /** Estado do app e ultimos eventos (sem dados de fichas). Util nos testes e para o suporte. */
+    private void mostrarDiagnostico() {
+        ArmazemLocal a = ArmazemLocal.get(this);
+        String dono = Repositorio.dono();
+        final String texto = "Versão " + BuildConfig.VERSION_NAME + " | Android "
+                + android.os.Build.VERSION.RELEASE + " (API " + android.os.Build.VERSION.SDK_INT + ") | "
+                + Api.dispositivo()
+                + "\nSessão: " + (Sessao.offline ? "offline" : "online")
+                + " | rede: " + (Rede.disponivel(this) ? "sim" : "não")
+                + "\nFichas no aparelho: " + a.quantidade()
+                + " | pendentes: " + a.contarPendentes(dono) + " | com erro: " + a.contarComErro(dono)
+                + "\nÚltimo erro de sincronização: "
+                + (Sincronizador.ultimoErro == null ? "nenhum" : Sincronizador.ultimoErro)
+                + "\nOCR offline: " + (LeitorOcr.disponivel() ? "incluído" : "ausente")
+                + "\n\n" + Diag.ultimas(80);
+        new AlertDialog.Builder(this)
+                .setTitle("Diagnóstico")
+                .setView(textoRolavel(texto))
+                .setPositiveButton("Copiar", (d, w) -> {
+                    android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                            getSystemService(CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("diagnostico", texto));
+                    toast("Copiado.");
+                })
+                .setNegativeButton("Fechar", null)
+                .show();
+    }
+
+    private void escolherAparencia() {
+        final String[] opcoes = {Aparencia.rotulo(Aparencia.AUTO), "Claro", "Escuro (visão noturna)"};
+        new AlertDialog.Builder(this)
+                .setTitle("Aparência")
+                .setSingleChoiceItems(opcoes, Aparencia.modo(this), (d, which) -> {
+                    d.dismiss();
+                    if (which != Aparencia.modo(this)) {
+                        Aparencia.definir(this, which);
+                        recreate();
+                    }
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
+    }
+
     private View textoRolavel(String texto) {
         android.widget.TextView tv = new android.widget.TextView(this);
         tv.setText(texto);
@@ -301,7 +492,15 @@ public class ListaActivity extends BaseActivity {
     public boolean onOptionsItemSelected(MenuItem item) {
         switch (item.getItemId()) {
             case MENU_ATUALIZAR:
+                Sincronizador.agendar(this);
                 carregar();
+                toast(Rede.disponivel(this) ? "Sincronizando..." : "Sem conexão: sincroniza quando a internet voltar.");
+                return true;
+            case MENU_APARENCIA:
+                escolherAparencia();
+                return true;
+            case MENU_DIAGNOSTICO:
+                mostrarDiagnostico();
                 return true;
             case MENU_IMPORTAR:
                 explicarImportacao();
@@ -346,6 +545,7 @@ public class ListaActivity extends BaseActivity {
         }
     }
 
+    /** Cor da tarja/borda: vermelho = resistente ativo, amarelo = passivo, verde = obediente. */
     static int corComportamento(String c) {
         switch (c) {
             case "OBEDIENTE":
@@ -382,22 +582,47 @@ public class ListaActivity extends BaseActivity {
             String nome = f.optString("nome");
             String alcunha = f.optString("alcunha");
             String comp = f.optString("comportamento");
-            int qtd = f.optInt("qtd_passagens");
+            JSONArray ps = f.optJSONArray("passagens");
+            int qtd = ps == null ? 0 : ps.length();
+            int cor = getColor(corComportamento(comp));
+
+            // Hierarquia visual: a borda, a tarja e o selo seguem o nivel de periculosidade.
+            android.graphics.drawable.GradientDrawable fundo = new android.graphics.drawable.GradientDrawable();
+            fundo.setColor(getColor(R.color.cartao));
+            fundo.setCornerRadius(dp(8));
+            fundo.setStroke(dp(comp.equals("RESISTENTE_ATIVO") ? 4 : comp.isEmpty() ? 1 : 3), cor);
+            v.findViewById(R.id.cartaoRaiz).setBackground(fundo);
 
             ((TextView) v.findViewById(R.id.tvNome)).setText(nome.isEmpty() ? "(sem nome)" : nome);
             TextView tvAlcunha = v.findViewById(R.id.tvAlcunha);
             tvAlcunha.setText(alcunha.isEmpty() ? "" : "vulgo \"" + alcunha + "\"");
             tvAlcunha.setVisibility(alcunha.isEmpty() ? View.GONE : View.VISIBLE);
+
             TextView tvComp = v.findViewById(R.id.tvComportamento);
             tvComp.setText(rotuloComportamento(comp));
-            tvComp.setTextColor(getColor(corComportamento(comp)));
+            tvComp.setTextColor(comp.equals("RESISTENTE_PASSIVO") ? 0xFF101010 : 0xFFFFFFFF);
+            tvComp.setBackgroundColor(cor);
             tvComp.setVisibility(comp.isEmpty() ? View.GONE : View.VISIBLE);
-            v.findViewById(R.id.vFaixa).setBackgroundColor(getColor(corComportamento(comp)));
+            v.findViewById(R.id.vFaixa).setBackgroundColor(cor);
+
+            TextView tvAlerta = v.findViewById(R.id.tvAlertaCnh);
+            boolean vencida = Cnh.vencida(f.optString("cnh_validade"));
+            tvAlerta.setBackgroundColor(getColor(R.color.vencida));
+            tvAlerta.setVisibility(vencida ? View.VISIBLE : View.GONE);
+
+            TextView tvStatus = v.findViewById(R.id.tvStatus);
+            String st = FiltrosDialog.rotuloStatus(f.optString("status"));
+            tvStatus.setText(st.equals("Qualquer") ? "" : st.toUpperCase(java.util.Locale.ROOT));
+            tvStatus.setVisibility(tvStatus.getText().length() == 0 ? View.GONE : View.VISIBLE);
+
+            boolean pendente = comPendencia.contains(f.optString("id"));
             ((TextView) v.findViewById(R.id.tvPassagens)).setText(
-                    qtd == 0 ? "Sem passagens" : qtd + (qtd == 1 ? " passagem" : " passagens"));
+                    (qtd == 0 ? "Sem passagens" : qtd + (qtd == 1 ? " passagem" : " passagens"))
+                            + (pendente ? "  •  ⏳ envio pendente" : ""));
 
             ImageView iv = v.findViewById(R.id.ivFoto);
-            String capa = f.isNull("foto_capa") ? "" : f.optString("foto_capa");
+            JSONArray fotos = f.optJSONArray("fotos");
+            String capa = fotos != null && fotos.length() > 0 ? fotos.optString(0) : "";
             if (capa.isEmpty()) {
                 iv.setTag(R.id.tag_foto, null);
                 iv.setImageResource(R.drawable.sem_foto);

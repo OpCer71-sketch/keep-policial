@@ -149,12 +149,15 @@ public final class Api {
             throw new IOException(e);
         }
         Request r = new Request.Builder().url(s.base() + "/api/login")
+                .header("X-Keep-Dispositivo", dispositivo())
                 .post(RequestBody.create(corpo.toString(), JSON)).build();
         JSONObject resp = json(c, r, s);
         if (resp.has("endereco_publico")) s.definirAlternativa(resp.optString("endereco_publico"));
         Sessao.cliente = c;
         Sessao.servidor = s;
         Sessao.token = resp.optString("token");
+        Sessao.offline = false;
+        Sessao.senhaMemoria = senha;
         Sessao.usuario = resp.optString("usuario");
         Sessao.nome = resp.optString("nome");
         Sessao.papel = resp.optString("papel");
@@ -188,7 +191,8 @@ public final class Api {
                 .addQueryParameter("q", busca).build();
         Request r = new Request.Builder().url(url)
                 .header("Authorization", "Bearer " + Sessao.token)
-                .header("X-Keep-Versao", BuildConfig.VERSION_NAME).build();
+                .header("X-Keep-Versao", BuildConfig.VERSION_NAME)
+                .header("X-Keep-Dispositivo", dispositivo()).build();
         return json(r).optJSONArray("suspeitos");
     }
 
@@ -262,6 +266,51 @@ public final class Api {
         executar(autenticado("/api/fotos/" + idFoto).delete().build()).close();
     }
 
+    /** Versao do servidor ("3.2.0") ou null se nao foi possivel consultar. */
+    static String versaoDoServidor() {
+        try {
+            return json(new Request.Builder().url(Sessao.servidor.base() + "/api/info").build())
+                    .optString("versao", null);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** Modelo do aparelho: aparece como "origem" no registro de auditoria da ficha. */
+    static String dispositivo() {
+        String m = (android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL).trim();
+        return m.replaceAll("[^\\w .:()/+-]", "");
+    }
+
+    /** Fichas alteradas desde o cursor (copia local). */
+    static JSONObject sincronizar(String cursor, int excl) throws IOException {
+        HttpUrl url = HttpUrl.get(Sessao.servidor.base() + "/api/sync").newBuilder()
+                .addQueryParameter("apos", cursor).addQueryParameter("excl", String.valueOf(excl))
+                .build();
+        return json(new Request.Builder().url(url)
+                .header("Authorization", "Bearer " + Sessao.token)
+                .header("X-Keep-Versao", BuildConfig.VERSION_NAME)
+                .header("X-Keep-Dispositivo", dispositivo()).build());
+    }
+
+    /** Consultas feitas no aparelho (inclusive offline) para o registro de auditoria. */
+    static void registrarConsultas(JSONArray itens) throws IOException {
+        try {
+            JSONObject corpo = new JSONObject().put("itens", itens);
+            executar(autenticado("/api/consultas").post(RequestBody.create(corpo.toString(), JSON))
+                    .build()).close();
+        } catch (JSONException e) {
+            throw new IOException(e);
+        }
+    }
+
+    /** Registro de auditoria de uma ficha (quem, o que, quando, de onde). */
+    static JSONArray historico(String idFicha) throws IOException {
+        JSONArray a = json(autenticado("/api/suspeitos/" + idFicha + "/historico").build())
+                .optJSONArray("historico");
+        return a != null ? a : new JSONArray();
+    }
+
     /** Avisos do administrador que este policial ainda nao confirmou. */
     static JSONArray avisos() throws IOException {
         JSONArray a = json(autenticado("/api/avisos").build()).optJSONArray("avisos");
@@ -279,7 +328,8 @@ public final class Api {
         if (!Sessao.ativa()) throw new ErroApi(401, "Sessão encerrada. Faça login novamente.");
         return new Request.Builder().url(Sessao.servidor.base() + caminho)
                 .header("Authorization", "Bearer " + Sessao.token)
-                .header("X-Keep-Versao", BuildConfig.VERSION_NAME);
+                .header("X-Keep-Versao", BuildConfig.VERSION_NAME)
+                .header("X-Keep-Dispositivo", dispositivo());
     }
 
     private static Response executar(Request r) throws IOException {

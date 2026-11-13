@@ -37,6 +37,10 @@ public final class Sessao {
     static String destacamento;
     /** Fim da sessao (ms desde 1970). */
     static long expiraEm;
+    /** Sessao aberta sem servidor (login offline): so le/grava no aparelho. */
+    static boolean offline;
+    /** Senha digitada neste login, SO na memoria: permite entrar de verdade quando a internet voltar. */
+    static String senhaMemoria;
 
     private Sessao() {
     }
@@ -55,11 +59,14 @@ public final class Sessao {
 
     /** Apaga a sessao da memoria e do aparelho. */
     static void encerrar(Context c) {
+        Repositorio.aoSair(c);
         token = null;
         usuario = null;
         nome = null;
         papel = null;
         expiraEm = 0;
+        offline = false;
+        senhaMemoria = null;
         Imagens.limpar();
         c.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().clear().apply();
@@ -74,6 +81,7 @@ public final class Sessao {
                     .put("nome", nome)
                     .put("papel", papel)
                     .put("destacamento", destacamento)
+                    .put("offline", offline)
                     .put("expira", expiraEm);
             Cipher cifra = Cipher.getInstance("AES/GCM/NoPadding");
             cifra.init(Cipher.ENCRYPT_MODE, chave());
@@ -111,6 +119,7 @@ public final class Sessao {
             nome = o.optString("nome");
             papel = o.optString("papel");
             destacamento = o.optString("destacamento");
+            offline = o.optBoolean("offline");
             expiraEm = expira;
             return true;
         } catch (Exception e) {

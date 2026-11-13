@@ -32,9 +32,13 @@ final class Imagens {
             return;
         }
         iv.setImageResource(R.drawable.sem_foto);
+        final android.content.Context ctx = iv.getContext().getApplicationContext();
         BaseActivity.EXEC.execute(() -> {
             try {
-                Bitmap bm = Fotos.decodificar(Api.baixarFoto(idFoto), maxLado);
+                // Aparelho primeiro (funciona offline); baixa do servidor so se faltar.
+                byte[] bytes = Repositorio.fotoBytes(ctx, idFoto);
+                if (bytes == null) return;
+                Bitmap bm = Fotos.decodificar(bytes, maxLado);
                 if (bm == null) return;
                 CACHE.put(chave, bm);
                 PRINCIPAL.post(() -> {
