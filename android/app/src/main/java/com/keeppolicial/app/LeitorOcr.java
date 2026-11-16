@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * OCR de documentos e placas com Google ML Kit, 100% OFFLINE: o modelo vai dentro do APK
+ * OCR de documentos com Google ML Kit, 100% OFFLINE: o modelo vai dentro do APK
  * e nenhuma imagem sai do aparelho.
  *
  * <p>Para fotos escuras (abordagem noturna) ou sem texto na 1a leitura, faz uma 2a leitura
@@ -82,12 +82,11 @@ final class LeitorOcr {
         return t.getText();
     }
 
-    private static int pontos(String texto, boolean soPlaca) {
+    private static int pontos(String texto) {
         ExtratorDocumento.Resultado r = ExtratorDocumento.extrair(texto);
-        if (soPlaca) return r.placa.isEmpty() ? 0 : 1;
         int n = 0;
         for (String s : new String[]{r.cpf, r.rg, r.cnhNumero, r.cnhCategoria, r.cnhValidade,
-                r.nome, r.pai, r.mae, r.placa}) {
+                r.nome, r.nascimento, r.pai, r.mae}) {
             if (!s.isEmpty()) n++;
         }
         return n;
@@ -97,27 +96,27 @@ final class LeitorOcr {
      * Le o texto do JPEG. Deve ser chamado FORA da thread principal. Nunca lanca excecao:
      * qualquer problema (memoria, motor, tempo) volta por {@link Ouvinte#erro}.
      */
-    static void ler(Context c, byte[] jpeg, boolean soPlaca, Ouvinte o) {
+    static void ler(Context c, byte[] jpeg, Ouvinte o) {
         long inicio = System.currentTimeMillis();
         Bitmap original = null, realcada = null;
         try {
             original = ProcessadorImagem.decodificar(jpeg, LADO_OCR);
             if (original == null) {
                 Diag.w(COMP, "imagem invalida (nao decodifica)", null);
-                o.erro("A foto não pôde ser aberta. Tire outra.");
+                o.erro("A imagem não pôde ser aberta. Tente outra foto.");
                 return;
             }
             double luz = ProcessadorImagem.luminanciaMedia(original);
             boolean escura = luz < LIMITE_ESCURA;
             String texto1 = reconhecer(original);
-            int p1 = pontos(texto1, soPlaca);
+            int p1 = pontos(texto1);
             String melhor = texto1;
             boolean usouRealce = false;
             if (escura || p1 == 0) {
                 // 2a chance: contraste/brilho corrigidos
                 realcada = ProcessadorImagem.realcar(original);
                 String texto2 = reconhecer(realcada);
-                int p2 = pontos(texto2, soPlaca);
+                int p2 = pontos(texto2);
                 if (p2 > p1 || (p1 == 0 && texto1.trim().isEmpty())) {
                     melhor = texto2;
                     usouRealce = true;

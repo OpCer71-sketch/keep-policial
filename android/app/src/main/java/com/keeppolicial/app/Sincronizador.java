@@ -255,7 +255,7 @@ final class Sincronizador {
         boolean novo = op.dados.optBoolean("novo");
         String base = op.dados.optString("base");
         JSONObject corpo = new JSONObject();
-        for (String k : new String[]{"nome", "alcunha", "cpf", "rg", "endereco", "pai", "mae",
+        for (String k : new String[]{"nome", "alcunha", "cpf", "rg", "endereco", "pai", "mae", "nascimento",
                 "comportamento", "observacoes", "passagens", "veiculos", "cnh_numero",
                 "cnh_categoria", "cnh_validade", "status"}) {
             if (ficha.has(k)) corpo.put(k, ficha.get(k));

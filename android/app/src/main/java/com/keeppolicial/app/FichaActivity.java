@@ -40,7 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FichaActivity extends BaseActivity {
     static final int MAX_FOTOS = 10;
     static final int MAX_OBS = 200;
-    private static final int REQ_CAMERA = 10, REQ_GALERIA = 11, REQ_SCAN_DOC = 12, REQ_SCAN_PLACA = 13;
+    private static final int REQ_CAMERA = 10, REQ_GALERIA = 11, REQ_SCAN_DOC = 12, REQ_GALERIA_DOC = 13;
     private static final int MENU_SALVAR = 1, MENU_EXCLUIR = 2;
 
     /** Foto ja gravada no servidor (id) ou ainda pendente de envio (jpeg). */
@@ -56,13 +56,11 @@ public class FichaActivity extends BaseActivity {
     private final Set<String> fotosRemovidas = ConcurrentHashMap.newKeySet();
     private String fotografia = "";
     private boolean ocupado;
-    /** Campo de placa que recebera o resultado do escaneamento da placa. */
-    private EditText placaAlvo;
 
     private LinearLayout llFotos, llPassagens, llVeiculos;
     private TextView tvFotosTitulo, tvContObs, tvRodape, tvCnhAlerta;
     private EditText etNome, etAlcunha, etCpf, etRg, etEndereco, etPai, etMae, etObs;
-    private EditText etCnhNumero, etCnhValidade;
+    private EditText etCnhNumero, etCnhValidade, etNascimento;
     private RadioGroup rgComp;
     /** Categoria de CNH e status operacional marcados ("" = nenhum). */
     private String categoria = "", statusOp = "";
@@ -96,12 +94,14 @@ public class FichaActivity extends BaseActivity {
         rgComp = findViewById(R.id.rgComportamento);
         etCnhNumero = findViewById(R.id.etCnhNumero);
         etCnhValidade = findViewById(R.id.etCnhValidade);
+        etNascimento = findViewById(R.id.etNascimento);
         tvCnhAlerta = findViewById(R.id.tvCnhAlerta);
         montarChips((android.widget.GridLayout) findViewById(R.id.gradeCategorias),
                 Cnh.CATEGORIAS, Cnh.CATEGORIAS, chipsCategoria, v -> categoria = v, 5);
         montarChips((android.widget.GridLayout) findViewById(R.id.gradeStatus),
                 STATUS_ROTULOS, STATUS_VALORES, chipsStatus, v -> statusOp = v, 2);
         etCnhValidade.addTextChangedListener(new Mascara("##/##/####"));
+        etNascimento.addTextChangedListener(new Mascara("##/##/####"));
         etCnhValidade.addTextChangedListener(new Observador(x -> atualizarAlertaCnh()));
         etCnhNumero.addTextChangedListener(new Observador(x -> {
             String n = x.toString();
@@ -257,6 +257,7 @@ public class FichaActivity extends BaseActivity {
         etEndereco.setText(f.optString("endereco"));
         etPai.setText(f.optString("pai"));
         etMae.setText(f.optString("mae"));
+        etNascimento.setText(Cnh.paraTela(f.optString("nascimento")));
         etObs.setText(f.optString("observacoes"));
         etCnhNumero.setText(f.optString("cnh_numero"));
         etCnhValidade.setText(Cnh.paraTela(f.optString("cnh_validade")));
@@ -394,7 +395,13 @@ public class FichaActivity extends BaseActivity {
     @Override
     protected void onActivityResult(int req, int res, Intent dados) {
         super.onActivityResult(req, res, dados);
-        if (req == REQ_SCAN_DOC || req == REQ_SCAN_PLACA) {
+        if (req == REQ_GALERIA_DOC) {
+            final Uri u = res == RESULT_OK && dados != null ? dados.getData() : null;
+            if (u == null) return;  // o policial desistiu
+            processarEscaneamento(() -> getContentResolver().openInputStream(u), null);
+            return;
+        }
+        if (req == REQ_SCAN_DOC) {
             final File arq = CameraProvider.arquivo(this);
             if (res != RESULT_OK || arq.length() == 0) {
                 Diag.w("Camera", "escaneamento sem foto (resultado=" + res + ", bytes=" + arq.length() + ")", null);
@@ -404,7 +411,7 @@ public class FichaActivity extends BaseActivity {
                 if (res == RESULT_OK) toast("A câmera não devolveu a foto. Tente de novo.");
                 return;
             }
-            processarEscaneamento(arq, req == REQ_SCAN_PLACA);
+            processarEscaneamento(() -> new FileInputStream(arq), arq);
             return;
         }
         if (req == REQ_CAMERA) {
@@ -543,12 +550,6 @@ public class FichaActivity extends BaseActivity {
             String n = Veiculos.normalizarPlaca(s.toString());
             if (!n.equals(s.toString())) s.replace(0, s.length(), n);
         }));
-        View btnScan = linha.findViewById(R.id.btnScanPlaca);
-        btnScan.setVisibility(LeitorOcr.disponivel() ? View.VISIBLE : View.GONE);
-        btnScan.setOnClickListener(v -> {
-            placaAlvo = etPlaca;
-            abrirCameraEscaneamento(REQ_SCAN_PLACA);
-        });
         linha.findViewById(R.id.btnRemover).setOnClickListener(v -> {
             boolean vazia = texto(etPlaca).isEmpty() && texto(etModelo).isEmpty()
                     && texto(etMarca).isEmpty() && texto(etCor).isEmpty();
@@ -576,17 +577,34 @@ public class FichaActivity extends BaseActivity {
         return null;
     }
 
-    // -- escanear documento / placa (OCR) ---------------------------------------------
+    // -- escanear documento (OCR) -------------------------------------------------------
 
-    /** O botao so aparece se o motor de OCR estiver incluido no app. */
+    /** Os botoes so aparecem se o motor de OCR estiver incluido no app. */
     private void configurarScanner() {
-        View b = findViewById(R.id.btnScanDoc);
-        b.setVisibility(LeitorOcr.disponivel() ? View.VISIBLE : View.GONE);
-        b.setOnClickListener(v -> abrirCameraEscaneamento(REQ_SCAN_DOC));
+        int vis = LeitorOcr.disponivel() ? View.VISIBLE : View.GONE;
+        View camera = findViewById(R.id.btnScanDoc);
+        camera.setVisibility(vis);
+        camera.setOnClickListener(v -> abrirCameraEscaneamento());
+        View galeria = findViewById(R.id.btnGaleriaDoc);
+        galeria.setVisibility(vis);
+        galeria.setOnClickListener(v -> abrirGaleriaEscaneamento());
         if (LeitorOcr.disponivel()) LeitorOcr.aquecer();
     }
 
-    private void abrirCameraEscaneamento(int req) {
+    /** Foto do documento ja salva no celular: mesmo fluxo de leitura da camera. */
+    private void abrirGaleriaEscaneamento() {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.setType("image/*");
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            Diag.d("Galeria", "abrindo a galeria para escanear documento");
+            startActivityForResult(Intent.createChooser(i, "Escolher foto do documento"), REQ_GALERIA_DOC);
+        } catch (ActivityNotFoundException e) {
+            alerta("Galeria", "Nenhum aplicativo de galeria encontrado.");
+        }
+    }
+
+    private void abrirCameraEscaneamento() {
         //noinspection ResultOfMethodCallIgnored
         CameraProvider.arquivo(this).delete();
         Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
@@ -594,8 +612,8 @@ public class FichaActivity extends BaseActivity {
         i.setClipData(ClipData.newRawUri("", CameraProvider.URI));
         i.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
         try {
-            Diag.d("Camera", "abrindo a camera para escanear (" + (req == REQ_SCAN_PLACA ? "placa" : "documento") + ")");
-            startActivityForResult(i, req);
+            Diag.d("Camera", "abrindo a camera para escanear documento");
+            startActivityForResult(i, REQ_SCAN_DOC);
         } catch (ActivityNotFoundException e) {
             Diag.e("Camera", "nenhum app de camera instalado", e);
             alerta("Câmera", "Nenhum aplicativo de câmera encontrado neste celular.");
@@ -609,23 +627,27 @@ public class FichaActivity extends BaseActivity {
         }
     }
 
-    /** Foto -> texto (OCR offline) -> campos. Falhas viram mensagens claras; nada e preenchido sem confirmar. */
-    private void processarEscaneamento(final File arq, final boolean soPlaca) {
-        final Dialog espera = carregando(soPlaca ? "Lendo a placa..." : "Lendo o documento...");
+    /**
+     * Foto (camera ou galeria) -> texto (OCR offline) -> campos. Falhas viram mensagens claras;
+     * nada e preenchido sem confirmar. {@code temporario}: foto da camera, apagada apos o uso
+     * (a imagem da galeria e so lida, nunca copiada nem alterada).
+     */
+    private void processarEscaneamento(final Fotos.Abridor fonte, final File temporario) {
+        final Dialog espera = carregando("Lendo o documento...");
         EXEC.execute(() -> {
             byte[] jpeg = null;
             String erro = null;
             try {
-                jpeg = Fotos.prepararJpeg(() -> new FileInputStream(arq));
+                jpeg = Fotos.prepararJpeg(fonte);
             } catch (OutOfMemoryError e) {
                 Diag.e("Camera", "memoria insuficiente ao preparar a foto", e);
                 erro = "O celular ficou sem memória para abrir a foto. Feche outros aplicativos e tente de novo.";
             } catch (Exception e) {
-                Diag.e("Camera", "foto tirada ilegivel", e);
-                erro = "Não foi possível abrir a foto tirada.";
+                Diag.e("Camera", "foto ilegivel", e);
+                erro = "Não foi possível abrir a foto.";
             } finally {
                 //noinspection ResultOfMethodCallIgnored
-                arq.delete();
+                if (temporario != null) temporario.delete();
             }
             if (jpeg == null) {
                 final String msg = erro;
@@ -635,15 +657,14 @@ public class FichaActivity extends BaseActivity {
                 });
                 return;
             }
-            LeitorOcr.ler(getApplicationContext(), jpeg, soPlaca, new LeitorOcr.Ouvinte() {
+            LeitorOcr.ler(getApplicationContext(), jpeg, new LeitorOcr.Ouvinte() {
                 @Override
                 public void texto(LeitorOcr.Leitura leitura) {
                     final ExtratorDocumento.Resultado r = ExtratorDocumento.extrair(leitura.texto);
                     ui.post(() -> {
                         espera.dismiss();
                         if (isDestroyed()) return;
-                        if (soPlaca) aplicarPlaca(r, leitura);
-                        else confirmarDadosLidos(r, leitura);
+                        confirmarDadosLidos(r, leitura);
                     });
                 }
 
@@ -666,20 +687,6 @@ public class FichaActivity extends BaseActivity {
                 + "Dicas: documento inteiro no quadro, câmera parada, sem reflexo.";
     }
 
-    private void aplicarPlaca(ExtratorDocumento.Resultado r, LeitorOcr.Leitura leitura) {
-        if (r.placa.isEmpty()) {
-            alerta("Placa não reconhecida", "Não foi possível ler a placa.\n\n" + dicaDeLeitura(leitura)
-                    + "\n\nVocê pode digitar a placa manualmente.");
-            return;
-        }
-        if (placaAlvo != null) {
-            placaAlvo.setText(r.placa);
-        } else {
-            adicionarVeiculo(r.placa, "", "", "");  // sem linha de destino: cria o veiculo
-        }
-        toast("Placa lida: " + r.placa + ". Confira.");
-    }
-
     /** Mostra o que foi lido; o policial marca o que quer aplicar (evita erro de OCR na ficha). */
     private void confirmarDadosLidos(final ExtratorDocumento.Resultado r, LeitorOcr.Leitura leitura) {
         if (r.vazio()) {
@@ -692,6 +699,8 @@ public class FichaActivity extends BaseActivity {
         adicionarLido(rotulos, acoes, "Nome", r.nome, texto(etNome), () -> etNome.setText(r.nome));
         adicionarLido(rotulos, acoes, "CPF", r.cpf, texto(etCpf), () -> etCpf.setText(r.cpf));
         adicionarLido(rotulos, acoes, "RG", r.rg, texto(etRg), () -> etRg.setText(r.rg));
+        adicionarLido(rotulos, acoes, "Nascimento", Cnh.paraTela(r.nascimento), texto(etNascimento),
+                () -> etNascimento.setText(Cnh.paraTela(r.nascimento)));
         adicionarLido(rotulos, acoes, "Pai", r.pai, texto(etPai), () -> etPai.setText(r.pai));
         adicionarLido(rotulos, acoes, "Mãe", r.mae, texto(etMae), () -> etMae.setText(r.mae));
         adicionarLido(rotulos, acoes, "Nº da CNH", r.cnhNumero, texto(etCnhNumero),
@@ -702,12 +711,6 @@ public class FichaActivity extends BaseActivity {
         });
         adicionarLido(rotulos, acoes, "Validade CNH", Cnh.paraTela(r.cnhValidade),
                 texto(etCnhValidade), () -> etCnhValidade.setText(Cnh.paraTela(r.cnhValidade)));
-        if (!r.placa.isEmpty()) {
-            adicionarLido(rotulos, acoes, "Placa", r.placa, "", () -> {
-                View linha = adicionarVeiculo(r.placa, "", "", "");
-                linha.requestFocus();
-            });
-        }
         final boolean[] marcados = new boolean[rotulos.size()];
         java.util.Arrays.fill(marcados, true);
         new AlertDialog.Builder(this)
@@ -756,6 +759,8 @@ public class FichaActivity extends BaseActivity {
             o.put("endereco", texto(etEndereco));
             o.put("pai", texto(etPai));
             o.put("mae", texto(etMae));
+            String nascimento = texto(etNascimento);
+            o.put("nascimento", nascimento.isEmpty() ? "" : Cnh.paraIso(nascimento));
             o.put("comportamento", comportamentoMarcado());
             o.put("observacoes", texto(etObs));
             o.put("cnh_numero", texto(etCnhNumero));
@@ -823,6 +828,12 @@ public class FichaActivity extends BaseActivity {
 
     /** CNH: data valida (bloqueia) e digitos verificadores (pergunta). */
     private void conferirCnhEEnviar() {
+        String nascimento = texto(etNascimento);
+        if (!nascimento.isEmpty() && Cnh.paraIso(nascimento).isEmpty()) {
+            etNascimento.setError("Data inválida (dia/mês/ano)");
+            etNascimento.requestFocus();
+            return;
+        }
         String validade = texto(etCnhValidade);
         if (!validade.isEmpty() && Cnh.paraIso(validade).isEmpty()) {
             etCnhValidade.setError("Data inválida (dia/mês/ano)");

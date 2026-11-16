@@ -44,15 +44,6 @@
             android:textSize="17sp" />
 
         <TextView
-            android:id="@+id/btnScanPlaca"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
-            android:gravity="center"
-            android:text="📷"
-            android:textSize="22sp"
-            android:visibility="gone" />
-
-        <TextView
             android:id="@+id/btnRemover"
             android:layout_width="56dp"
             android:layout_height="56dp"

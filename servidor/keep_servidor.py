@@ -45,7 +45,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSAO = "3.2.0"
+VERSAO = "3.3.0"
 DADOS = os.environ.get("KEEP_DADOS", "/var/lib/keeppolicial")
 
 ARQ_CONFIG = "config.json"
@@ -376,7 +376,8 @@ def migrar(db):
         "suspeitos": [("cnh_numero", "TEXT NOT NULL DEFAULT ''"),
                       ("cnh_categoria", "TEXT NOT NULL DEFAULT ''"),
                       ("cnh_validade", "TEXT NOT NULL DEFAULT ''"),
-                      ("status", "TEXT NOT NULL DEFAULT ''")],
+                      ("status", "TEXT NOT NULL DEFAULT ''"),
+                      ("nascimento", "TEXT NOT NULL DEFAULT ''")],
         "auditoria": [("ficha_id", "TEXT NOT NULL DEFAULT ''"),
                       ("dispositivo", "TEXT NOT NULL DEFAULT ''")],
     }
@@ -1240,6 +1241,8 @@ class Handler(BaseHTTPRequestHandler):
             ficha["cnh_categoria"] = cat
         if "cnh_validade" in dados:
             ficha["cnh_validade"] = self._data_iso(dados.get("cnh_validade"))
+        if "nascimento" in dados:
+            ficha["nascimento"] = self._data_iso(dados.get("nascimento"))
         if "status" in dados:
             st = str(dados.get("status") or "").strip().upper()
             if st not in STATUS_OPERACIONAL:
@@ -1351,12 +1354,12 @@ class Handler(BaseHTTPRequestHandler):
         db.execute(
             "INSERT INTO suspeitos (id, nome, alcunha, cpf, rg, endereco, pai, mae, "
             "comportamento, observacoes, busca, cnh_numero, cnh_categoria, cnh_validade, status, "
-            "criado_por, criado_em, atualizado_por, atualizado_em) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "nascimento, criado_por, criado_em, atualizado_por, atualizado_em) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, ficha["nome"], ficha["alcunha"], ficha["cpf"], ficha["rg"], ficha["endereco"],
              ficha["pai"], ficha["mae"], ficha["comportamento"], ficha["observacoes"],
              ficha["busca"], ficha.get("cnh_numero", ""), ficha.get("cnh_categoria", ""),
-             ficha.get("cnh_validade", ""), ficha.get("status", ""),
+             ficha.get("cnh_validade", ""), ficha.get("status", ""), ficha.get("nascimento", ""),
              u["usuario"], agora, u["usuario"], agora))
         self._gravar_passagens(db, sid, lista, ficha)
         auditar(db, u["usuario"], self.ip, "CRIAR_FICHA", "%s (%s)" % (sid, ficha["nome"]))
@@ -1374,7 +1377,8 @@ class Handler(BaseHTTPRequestHandler):
         """Resumo do que mudou, para o registro de auditoria (campo: 'antes' -> 'depois')."""
         partes = []
         for campo in ("nome", "alcunha", "cpf", "rg", "endereco", "pai", "mae", "comportamento",
-                      "observacoes", "cnh_numero", "cnh_categoria", "cnh_validade", "status"):
+                      "observacoes", "cnh_numero", "cnh_categoria", "cnh_validade", "status",
+                      "nascimento"):
             if ficha.get(campo) is None:
                 continue
             a, n = str(antigo.get(campo) or ""), str(ficha[campo] or "")
@@ -1406,11 +1410,12 @@ class Handler(BaseHTTPRequestHandler):
             "comportamento=?, observacoes=?, busca=?, "
             "cnh_numero=COALESCE(?, cnh_numero), cnh_categoria=COALESCE(?, cnh_categoria), "
             "cnh_validade=COALESCE(?, cnh_validade), status=COALESCE(?, status), "
-            "atualizado_por=?, atualizado_em=? WHERE id=?",
+            "nascimento=COALESCE(?, nascimento), atualizado_por=?, atualizado_em=? WHERE id=?",
             (ficha["nome"], ficha["alcunha"], ficha["cpf"], ficha["rg"], ficha["endereco"],
              ficha["pai"], ficha["mae"], ficha["comportamento"], ficha["observacoes"],
              ficha["busca"], ficha.get("cnh_numero"), ficha.get("cnh_categoria"),
-             ficha.get("cnh_validade"), ficha.get("status"), u["usuario"], agora_iso(), sid))
+             ficha.get("cnh_validade"), ficha.get("status"), ficha.get("nascimento"),
+             u["usuario"], agora_iso(), sid))
         self._gravar_passagens(db, sid, lista, ficha)
         detalhe = self._diferencas(antigo, ficha, lista[0], lista[1])
         if conflito:

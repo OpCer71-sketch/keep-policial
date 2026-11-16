@@ -279,7 +279,7 @@ Ao abrir o app, cada policial vê o aviso numa janela e precisa tocar em **Cient
 - **Status operacional:** em acompanhamento, preso, foragido ou inativo.
 - **Filtros avançados** (botão ao lado da busca): periculosidade, status, categoria da CNH, CNH vencida, com veículo, período de cadastro/atualização, envio pendente e ordenação.
 - **Histórico de auditoria** em cada ficha: **quem**, **o que** (criação, consulta, campos alterados), **quando** e de **qual aparelho**. No servidor o registro é **imutável** (o banco recusa alterar ou apagar), inclusive as consultas feitas offline, que chegam na sincronização.
-- **Escanear documento/placa (RG, CPF, CNH, placa):** o botão só aparece quando o motor de leitura está incluído no app.
+- **Escanear documento (RG, CPF, CNH):** tire a foto na hora ou use **Importar da galeria** para uma foto já salva no celular. O app lê nome, CPF, RG, nascimento, filiação (pai e mãe), nº, categoria e validade da CNH e mostra tudo para conferência antes de preencher. Os botões só aparecem quando o motor de leitura está incluído no app.
 
 > **Ordem de atualização (importante):** atualize **primeiro o servidor** (painel > Atualizações > Instalar agora) e **depois** os celulares. O app 3.2 só funciona com servidor 3.2: com servidor antigo ele mostra a faixa vermelha "Servidor desatualizado" e não envia nem baixa nada (o que foi feito fica guardado no aparelho). O app também **não instala a atualização sozinho** enquanto o servidor do destacamento estiver numa versão anterior.
 

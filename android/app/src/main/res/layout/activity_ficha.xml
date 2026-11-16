@@ -43,6 +43,12 @@
                 style="@style/BotaoSecundario"
                 android:layout_width="match_parent"
                 android:text="📷  Escanear documento (RG, CPF, CNH)" />
+            <Button
+                android:id="@+id/btnGaleriaDoc"
+                style="@style/BotaoSecundario"
+                android:layout_width="match_parent"
+                android:layout_marginTop="8dp"
+                android:text="🖼  Importar da galeria" />
             <TextView style="@style/Rotulo" android:text="Nome completo" />
             <EditText
                 android:id="@+id/etNome"
@@ -94,6 +100,16 @@
                         android:maxLength="20" />
                 </LinearLayout>
             </LinearLayout>
+
+            <TextView style="@style/Rotulo" android:text="Data de nascimento" />
+            <EditText
+                android:id="@+id/etNascimento"
+                style="@style/Campo"
+                android:digits="0123456789/"
+                android:hint="dd/mm/aaaa"
+                android:importantForAutofill="no"
+                android:inputType="number"
+                android:maxLength="10" />
 
             <TextView style="@style/Rotulo" android:text="Endereço" />
             <EditText
