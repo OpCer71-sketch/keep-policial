@@ -92,7 +92,7 @@ final class Sincronizador {
                     rodada(app);
                 } catch (Throwable t) {
                     ultimoErro = "Falha inesperada na sincronização.";
-                    Falhas.registrarLocal(app, "Sincronização: " + t);
+                    Diag.e("Sync", "falha inesperada na sincronizacao", t);
                 }
                 synchronized (CONTROLE) {
                     outra = repetir;

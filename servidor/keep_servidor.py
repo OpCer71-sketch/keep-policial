@@ -45,7 +45,7 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSAO = "3.3.0"
+VERSAO = "3.3.1"
 DADOS = os.environ.get("KEEP_DADOS", "/var/lib/keeppolicial")
 
 ARQ_CONFIG = "config.json"
@@ -138,7 +138,12 @@ _HASH_FALSO = None
 # Auditoria de falhas (erros do servidor e do aplicativo, para suporte)
 MAX_FALHAS_GUARDADAS = 500
 LIMITE_DETALHE_FALHA = 6000
-MAX_RELATOS_APP_HORA = 10
+MAX_RELATOS_APP_HORA = 30
+# Encaminhamento das falhas ao desenvolvedor por um bot do Telegram (opcional).
+MAX_TELEGRAM_HORA = 20
+CODIGO_FALHA = re.compile(r"KP-[A-Z]{2,8}-[0-9A-F]{4,8}")
+TOKEN_TELEGRAM = re.compile(r"\d{5,12}:[A-Za-z0-9_-]{30,60}")
+CHAT_TELEGRAM = re.compile(r"-?\d{3,20}")
 MAX_CONEXOES = 120
 _conexoes = threading.BoundedSemaphore(MAX_CONEXOES)
 
@@ -181,8 +186,11 @@ def carregar_config():
 
 def salvar_config(cfg):
     os.makedirs(DADOS, exist_ok=True)
-    with open(caminho(ARQ_CONFIG), "w", encoding="utf-8") as f:
+    # 0600: o arquivo guarda o token do bot do Telegram.
+    fd = os.open(caminho(ARQ_CONFIG), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.chmod(caminho(ARQ_CONFIG), 0o600)
 
 
 def hash_senha(senha):
@@ -378,6 +386,7 @@ def migrar(db):
                       ("cnh_validade", "TEXT NOT NULL DEFAULT ''"),
                       ("status", "TEXT NOT NULL DEFAULT ''"),
                       ("nascimento", "TEXT NOT NULL DEFAULT ''")],
+        "falhas": [("codigo", "TEXT NOT NULL DEFAULT ''")],
         "auditoria": [("ficha_id", "TEXT NOT NULL DEFAULT ''"),
                       ("dispositivo", "TEXT NOT NULL DEFAULT ''")],
     }
@@ -475,37 +484,134 @@ def limpar_texto(texto, limite=LIMITE_DETALHE_FALHA):
     return texto
 
 
-def registrar_falha(origem, titulo, detalhe, usuario="", versao="", db=None):
-    """Registra uma falha. Nunca levanta excecao (nao pode piorar o problema)."""
+def registrar_falha(origem, titulo, detalhe, usuario="", versao="", db=None, codigo=""):
+    """Registra uma falha. Nunca levanta excecao (nao pode piorar o problema).
+
+    Cada defeito tem um CODIGO estavel (KP-COMPONENTE-XXXXXX): o app manda o seu; para os
+    erros do servidor ele e derivado da assinatura (origem, titulo e fim da pilha).
+    """
     try:
         titulo = limpar_texto(titulo, 160).replace("\n", " ").strip() or "(sem titulo)"
         detalhe = limpar_texto(detalhe)
-        linhas = [l for l in detalhe.splitlines() if l.strip()]
-        base = origem + "|" + titulo + "|" + "|".join(linhas[-3:])
+        codigo = str(codigo or "").strip().upper()
+        if CODIGO_FALHA.fullmatch(codigo):
+            base = origem + "|" + codigo
+        else:
+            linhas = [l for l in detalhe.splitlines() if l.strip()]
+            base = origem + "|" + titulo + "|" + "|".join(linhas[-3:])
+            codigo = ""
         assinatura = hashlib.sha1(base.encode("utf-8", "replace")).hexdigest()[:16]
+        if not codigo:
+            codigo = "KP-%s-%s" % ("SRV" if origem == "servidor" else "APP", assinatura[:6].upper())
         proprio = db is None
         if proprio:
             db = abrir_db()
+        aviso = None
         try:
             agora = agora_iso()
-            ja = db.execute("SELECT id FROM falhas WHERE assinatura=? AND resolvida=0",
+            ja = db.execute("SELECT id, ocorrencias FROM falhas WHERE assinatura=? AND resolvida=0",
                             (assinatura,)).fetchone()
             if ja:
                 db.execute("UPDATE falhas SET ocorrencias=ocorrencias+1, ultima_em=? WHERE id=?",
                            (agora, ja["id"]))
+                if ja["ocorrencias"] + 1 in (10, 100, 1000):
+                    aviso = _texto_aviso_falha(codigo, origem, versao, titulo, detalhe,
+                                               ja["ocorrencias"] + 1)
             else:
                 db.execute(
                     "INSERT INTO falhas (assinatura, origem, titulo, detalhe, usuario, versao, "
-                    "primeira_em, ultima_em) VALUES (?,?,?,?,?,?,?,?)",
+                    "primeira_em, ultima_em, codigo) VALUES (?,?,?,?,?,?,?,?,?)",
                     (assinatura, origem, titulo, detalhe, usuario or "", str(versao or "")[:20],
-                     agora, agora))
+                     agora, agora, codigo))
                 db.execute("DELETE FROM falhas WHERE id NOT IN "
                            "(SELECT id FROM falhas ORDER BY id DESC LIMIT ?)",
                            (MAX_FALHAS_GUARDADAS,))
+                aviso = _texto_aviso_falha(codigo, origem, versao, titulo, detalhe, 1)
             db.commit()
         finally:
             if proprio:
                 db.close()
+        if aviso:
+            notificar_telegram(aviso)
+    except Exception:
+        traceback.print_exc()
+
+
+# -- encaminhamento ao desenvolvedor (Telegram) ---------------------------------
+# Desligado ate o administrador informar o token do bot e o chat no painel (Falhas).
+# Vai so o que ja esta na tela Falhas: codigo, versao, titulo e pilha, depois da
+# limpeza de dados pessoais. Nunca vai o usuario (login) do policial.
+
+_envios_telegram = []
+_trava_telegram = threading.Lock()
+
+
+def _texto_aviso_falha(codigo, origem, versao, titulo, detalhe, vezes):
+    cfg = carregar_config()
+    cab = ("Keep Policial - falha nova" if vezes == 1
+           else "Keep Policial - falha repetiu %d vezes" % vezes)
+    texto = "%s\nCodigo: %s\nServidor: %s (versao %s)\nOrigem: %s%s\n\n%s\n\n%s" % (
+        cab, codigo, cfg.get("nome_destacamento", ""), VERSAO, origem,
+        (" " + str(versao)) if versao else "", titulo, detalhe[:2500])
+    return texto[:3900]
+
+
+def telegram_configurado(cfg=None):
+    cfg = cfg or carregar_config()
+    return bool(cfg.get("telegram_token")) and bool(cfg.get("telegram_chat"))
+
+
+def _telegram_api(token, metodo, dados=None):
+    req = urllib.request.Request(
+        "https://api.telegram.org/bot%s/%s" % (token, metodo),
+        data=json.dumps(dados or {}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "KeepPolicial/" + VERSAO})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read(1000000).decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            resp = json.loads(e.read(100000).decode("utf-8"))
+        except Exception:
+            resp = {"description": "HTTP %d" % e.code}
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise ValueError("sem conexão com o Telegram (%s)" % getattr(e, "reason", e))
+    if not resp.get("ok"):
+        raise ValueError(str(resp.get("description") or "resposta inválida")[:200])
+    return resp.get("result")
+
+
+def enviar_telegram(texto, cfg=None):
+    """Envia agora (levanta ValueError com o motivo). Texto puro, sem formatacao."""
+    cfg = cfg or carregar_config()
+    if not telegram_configurado(cfg):
+        raise ValueError("Telegram não configurado.")
+    _telegram_api(cfg["telegram_token"], "sendMessage",
+                  {"chat_id": cfg["telegram_chat"], "text": texto[:4000],
+                   "disable_web_page_preview": True})
+
+
+def notificar_telegram(texto):
+    """Envio em segundo plano, com limite por hora. Nunca levanta excecao."""
+    try:
+        cfg = carregar_config()
+        if not telegram_configurado(cfg):
+            return
+        with _trava_telegram:
+            agora = time.time()
+            _envios_telegram[:] = [t for t in _envios_telegram if agora - t < 3600]
+            if len(_envios_telegram) >= MAX_TELEGRAM_HORA:
+                return
+            _envios_telegram.append(agora)
+
+        def enviar():
+            try:
+                enviar_telegram(texto, cfg)
+            except Exception as e:
+                # Nao registra como falha (evitaria um laco de avisos).
+                sys.stderr.write("[%s] Telegram: %s\n" % (agora_iso(), str(e).replace(
+                    cfg.get("telegram_token", "-"), "***")))
+        threading.Thread(target=enviar, daemon=True).start()
     except Exception:
         traceback.print_exc()
 
@@ -528,8 +634,9 @@ def relatorio_suporte(db):
                                                      for a in apps) or "nenhuma ainda"),
            "Falhas em aberto: %d" % len(abertas), ""]
     for f in abertas:
-        out += ["--- Falha #%d | origem: %s | versao: %s | %d ocorrencia(s) | "
-                "primeira %s | ultima %s ---" % (f["id"], f["origem"], f["versao"] or "-",
+        out += ["--- Falha #%d | %s | origem: %s | versao: %s | %d ocorrencia(s) | "
+                "primeira %s | ultima %s ---" % (f["id"], f["codigo"] or "-", f["origem"],
+                                                  f["versao"] or "-",
                                                   f["ocorrencias"], f["primeira_em"],
                                                   f["ultima_em"]),
                 f["titulo"], f["detalhe"], ""]
@@ -1127,7 +1234,8 @@ class Handler(BaseHTTPRequestHandler):
         detalhe = "Android: %s\n%s" % (str(dados.get("android", ""))[:60],
                                        str(dados.get("detalhe", ""))[:LIMITE_DETALHE_FALHA * 2])
         registrar_falha("app", titulo, detalhe, u["usuario"],
-                        str(dados.get("versao_app", ""))[:20], db)
+                        str(dados.get("versao_app", ""))[:20], db,
+                        codigo=str(dados.get("codigo", ""))[:20])
         self._json(201, {"ok": True})
 
     def r_sincronizar(self, db, u, q):
@@ -1863,6 +1971,30 @@ class HandlerPainel(BaseHTTPRequestHandler):
                 db.commit()
                 self._avisar(s, "ok", "Falhas marcadas como resolvidas.")
                 return self._redirecionar("/falhas")
+            if metodo == "POST" and rota == "/falhas/telegram":
+                return self._p_telegram(db, s, autor)
+            if metodo == "POST" and rota == "/falhas/telegram/detectar":
+                cfg = carregar_config()
+                if not cfg.get("telegram_token"):
+                    raise ValueError("Salve primeiro o token do bot.")
+                chats = [u.get("message", {}).get("chat", {}).get("id")
+                         for u in (_telegram_api(cfg["telegram_token"], "getUpdates") or [])]
+                chats = [c for c in chats if c is not None]
+                if not chats:
+                    raise ValueError("Nenhuma mensagem encontrada. Abra o seu bot no Telegram, "
+                                     "envie qualquer mensagem (ex.: oi) e tente de novo.")
+                cfg["telegram_chat"] = str(chats[-1])
+                salvar_config(cfg)
+                auditar(db, autor, "painel", "CONFIG_TELEGRAM", "chat detectado")
+                db.commit()
+                self._avisar(s, "ok", "Chat detectado e salvo. Agora clique em 'Enviar teste'.")
+                return self._redirecionar("/falhas")
+            if metodo == "POST" and rota == "/falhas/telegram/teste":
+                enviar_telegram("Keep Policial - teste: as falhas do servidor '%s' (versao %s) "
+                                "chegarao aqui." % (carregar_config().get("nome_destacamento"),
+                                                    VERSAO))
+                self._avisar(s, "ok", "Mensagem de teste enviada. Confira o Telegram.")
+                return self._redirecionar("/falhas")
             if metodo == "GET" and rota == "/atualizacoes":
                 return self._g_atualizacoes(db, s)
             if metodo == "POST" and rota == "/atualizacoes/verificar":
@@ -2146,11 +2278,40 @@ class HandlerPainel(BaseHTTPRequestHandler):
         abertas = db.execute("SELECT * FROM falhas WHERE resolvida=0 ORDER BY ultima_em DESC "
                              "LIMIT 100").fetchall()
         linhas = "".join(
-            "<tr><td>#%d</td><td>%s</td><td>%s</td><td><b>%s</b><pre class='notas'>%s</pre></td>"
+            "<tr><td>#%d</td><td class='mono'><b>%s</b></td><td>%s</td><td>%s</td>"
+            "<td><b>%s</b><pre class='notas'>%s</pre></td>"
             "<td>%d</td><td class='mono'>%s</td></tr>" % (
-                f["id"], _e(f["origem"]), _e(f["versao"] or "-"), _e(f["titulo"]),
-                _e(f["detalhe"][:1500]), f["ocorrencias"], _e(f["ultima_em"]))
+                f["id"], _e(f["codigo"] or "-"), _e(f["origem"]), _e(f["versao"] or "-"),
+                _e(f["titulo"]), _e(f["detalhe"][:1500]), f["ocorrencias"], _e(f["ultima_em"]))
             for f in abertas)
+        cfg = carregar_config()
+        token = cfg.get("telegram_token", "")
+        token_vis = (token.split(":")[0] + ":••••••" + token[-4:]) if token else "não configurado"
+        telegram = (
+            "<div class='cartao'><h2>Receber as falhas no Telegram</h2>"
+            "<p class='dica'>Cada falha NOVA (e quando uma falha se repete 10, 100 ou 1000 vezes) "
+            "é enviada ao desenvolvedor por um bot do Telegram, já sem dados pessoais e sem o "
+            "login do policial. Como configurar: 1) no Telegram, fale com <b>@BotFather</b>, "
+            "envie <span class='mono'>/newbot</span> e copie o token; 2) cole o token abaixo e "
+            "salve; 3) mande qualquer mensagem para o seu bot e clique em <b>Detectar meu "
+            "chat</b>; 4) clique em <b>Enviar teste</b>.</p>"
+            "<p>Situação: <b>%s</b> | Token: <span class='mono'>%s</span> | Chat: "
+            "<span class='mono'>%s</span></p>"
+            "<form method='post' action='/falhas/telegram'>%s"
+            "<label>Token do bot (deixe em branco para manter o atual)</label>"
+            "<input name='token' autocomplete='off' placeholder='123456789:AA...'>"
+            "<label>ID do chat (opcional: use \"Detectar meu chat\")</label>"
+            "<input name='chat' autocomplete='off' value='%s'>"
+            "<p class='acoes'><button class='botao'>Salvar</button>"
+            "<label style='display:inline'><input type='checkbox' name='desligar' value='1'> "
+            "Desligar e apagar o token</label></p></form>"
+            "<p class='acoes'><form method='post' action='/falhas/telegram/detectar' "
+            "style='margin:0'>%s<button class='botao sec'>Detectar meu chat</button></form>"
+            "<form method='post' action='/falhas/telegram/teste' style='margin:0'>%s"
+            "<button class='botao sec'>Enviar teste</button></form></p></div>"
+            % ("ligado" if telegram_configurado(cfg) else "desligado", _e(token_vis),
+               _e(cfg.get("telegram_chat") or "-"), csrf, _e(cfg.get("telegram_chat", "")),
+               csrf, csrf))
         relatorio = relatorio_suporte(db)
         corpo = ("<div class='cartao'><h2>Falhas registradas</h2>"
                  "<p class='dica'>O sistema anota aqui erros do servidor e do aplicativo, "
@@ -2164,10 +2325,12 @@ class HandlerPainel(BaseHTTPRequestHandler):
                  "Copiar relatório</button>"
                  "<form method='post' action='/falhas/resolver' style='margin:0'>%s"
                  "<button class='botao sec'>Marcar todas como resolvidas</button></form></p>"
-                 "<div class='rolagem'><table><tr><th>Nº</th><th>Origem</th><th>Versão</th>"
-                 "<th>Falha</th><th>Vezes</th><th>Última</th></tr>%s</table></div></div>"
+                 "<div class='rolagem'><table><tr><th>Nº</th><th>Código</th><th>Origem</th>"
+                 "<th>Versão</th><th>Falha</th><th>Vezes</th><th>Última</th></tr>%s</table>"
+                 "</div></div>%s"
                  % (_e(relatorio), csrf,
-                    linhas or "<tr><td colspan='6'>Nenhuma falha em aberto. 🎉</td></tr>"))
+                    linhas or "<tr><td colspan='7'>Nenhuma falha em aberto. 🎉</td></tr>",
+                    telegram))
         self._enviar(200, self._pagina("Falhas", corpo, s, "/falhas"))
 
     def _g_auditoria(self, db, s, q):
@@ -2295,6 +2458,36 @@ class HandlerPainel(BaseHTTPRequestHandler):
                     _e(int(float(cfg["horas_sessao"]))), _e(cfg["porta"]),
                     _e(codigo_verificacao())))
         self._enviar(200, self._pagina("Configurações", corpo, s, "/config"))
+
+    def _p_telegram(self, db, s, autor):
+        f = self.form
+        cfg = carregar_config()
+        if f.get("desligar") == "1":
+            cfg.pop("telegram_token", None)
+            cfg.pop("telegram_chat", None)
+            salvar_config(cfg)
+            auditar(db, autor, "painel", "CONFIG_TELEGRAM", "desligado")
+            db.commit()
+            self._avisar(s, "ok", "Envio ao Telegram desligado e token apagado.")
+            return self._redirecionar("/falhas")
+        token = f.get("token", "").strip()
+        chat = f.get("chat", "").strip()
+        if token and not TOKEN_TELEGRAM.fullmatch(token):
+            raise ValueError("Token inválido. Copie o token inteiro que o @BotFather enviou "
+                             "(ex.: 123456789:AAH...).")
+        if chat and not CHAT_TELEGRAM.fullmatch(chat):
+            raise ValueError("ID do chat inválido (só números; grupos começam com -).")
+        if token:
+            _telegram_api(token, "getMe")  # confere o token antes de salvar
+            cfg["telegram_token"] = token
+        if chat:
+            cfg["telegram_chat"] = chat
+        salvar_config(cfg)
+        auditar(db, autor, "painel", "CONFIG_TELEGRAM",
+                "token %s; chat %s" % ("novo" if token else "mantido", "definido" if chat else "-"))
+        db.commit()
+        self._avisar(s, "ok", "Configuração do Telegram salva.")
+        self._redirecionar("/falhas")
 
     def _p_config(self, db, s, autor):
         f = self.form

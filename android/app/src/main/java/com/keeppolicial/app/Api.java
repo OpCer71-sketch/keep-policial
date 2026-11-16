@@ -242,10 +242,10 @@ public final class Api {
     }
 
     /** Relato de erro inesperado do app (sem dados de fichas) para o suporte. */
-    static void relatarFalha(String titulo, String detalhe) throws IOException {
+    static void relatarFalha(String codigo, String titulo, String detalhe) throws IOException {
         JSONObject corpo = new JSONObject();
         try {
-            corpo.put("titulo", titulo).put("detalhe", detalhe)
+            corpo.put("codigo", codigo).put("titulo", titulo).put("detalhe", detalhe)
                     .put("versao_app", BuildConfig.VERSION_NAME)
                     .put("android", "Android " + android.os.Build.VERSION.RELEASE + " / "
                             + android.os.Build.MODEL);

@@ -37,7 +37,21 @@ final class Diag {
         registrar(Log.WARN, "W", comp, msg, t);
     }
 
-    static void e(String comp, String msg, Throwable t) {
+    /**
+     * Erro: alem do log, vira um relato com codigo (KP-COMP-XXXXXX) enviado ao servidor.
+     * A mensagem deve ser FIXA (sem dados de pessoa): ela compoe o codigo do defeito.
+     */
+    static String e(String comp, String msg, Throwable t) {
+        registrar(Log.ERROR, "E", comp, msg, t);
+        try {
+            return Falhas.anotar(comp, msg, t);
+        } catch (Throwable ignorado) {
+            return "";
+        }
+    }
+
+    /** So o log (usado pelo proprio relato de travamento, para nao duplicar). */
+    static void registrarSemRelato(String comp, String msg, Throwable t) {
         registrar(Log.ERROR, "E", comp, msg, t);
     }
 

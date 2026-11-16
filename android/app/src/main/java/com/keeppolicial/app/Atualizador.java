@@ -49,6 +49,14 @@ final class Atualizador {
     private static final String PREFS = "atualizacao";
     private static final String TIPO_APK = "application/vnd.android.package-archive";
     private static final long MAX_BYTES_APK = 100L * 1024 * 1024;
+    /**
+     * Chave publica das releases (ECDSA P-256), a mesma de servidor/chave-publica-release.pem.
+     * O SHA256SUMS de cada release vem assinado com a chave privada que so o mantenedor tem:
+     * quem invadir a conta do GitHub nao consegue publicar um APK que o app aceite.
+     */
+    private static final String CHAVE_PUBLICA_RELEASE =
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuMPliZVZiBvO18tLVbJ9f7l88YP7"
+            + "z/ttbQsAejJ3Qhk6YB+gh85HVK6OZawpsq6Jw6Uveu9qai58ohdJGyoGmA==";
 
     private static final Handler UI = new Handler(Looper.getMainLooper());
     private static volatile boolean verificando;
@@ -158,7 +166,7 @@ final class Atualizador {
                         + "do destacamento for atualizado.";
             }
         }
-        String urlApk = null, urlSomas = null, nomeApk = null;
+        String urlApk = null, urlSomas = null, urlAssinatura = null, nomeApk = null;
         long tamanho = 0;
         JSONArray assets = rel.optJSONArray("assets");
         for (int i = 0; assets != null && i < assets.length(); i++) {
@@ -171,12 +179,24 @@ final class Atualizador {
                 tamanho = as.optLong("size");
             } else if (nome.equals("SHA256SUMS")) {
                 urlSomas = as.optString("browser_download_url");
+            } else if (nome.equals("SHA256SUMS.sig")) {
+                urlAssinatura = as.optString("browser_download_url");
             }
         }
         if (urlApk == null || urlApk.isEmpty()) {
             return "A versão " + tag + " ainda não tem o aplicativo publicado.";
         }
         if (tamanho > MAX_BYTES_APK) throw new IOException("APK grande demais.");
+        if (urlSomas == null || urlAssinatura == null) {
+            throw new IOException("a versão " + tag + " não tem as somas assinadas; atualização recusada.");
+        }
+        // Confere a assinatura ANTES de baixar o APK.
+        byte[] somasBytes = baixarPequeno(c, urlSomas);
+        if (!assinaturaValida(somasBytes, baixarPequeno(c, urlAssinatura))) {
+            Diag.e("Atualizador", "assinatura do SHA256SUMS invalida (release " + tag + ")", null);
+            throw new IOException("a assinatura da versão " + tag + " não confere; atualização recusada.");
+        }
+        String somas = new String(somasBytes, java.nio.charset.StandardCharsets.UTF_8);
 
         File dir = new File(app.getCacheDir(), "atualizacao");
         apagarConteudo(dir);
@@ -186,20 +206,12 @@ final class Atualizador {
         File destino = new File(dir, "KeepPolicial-" + tag.replaceAll("[^0-9A-Za-z.]", "") + ".apk");
         String sha = baixar(c, urlApk, parcial);
 
-        if (urlSomas != null) {
-            String somas;
-            try (Response r = c.newCall(new Request.Builder().url(urlSomas)
-                    .header("User-Agent", "KeepPolicial-App").build()).execute()) {
-                if (!r.isSuccessful()) throw new IOException("Falha ao baixar SHA256SUMS");
-                somas = r.body().string();
-            }
-            Matcher m = Pattern.compile("(?m)^([0-9a-fA-F]{64})\\s+\\*?"
-                    + Pattern.quote(nomeApk) + "\\s*$").matcher(somas);
-            if (!m.find() || !m.group(1).equalsIgnoreCase(sha)) {
-                //noinspection ResultOfMethodCallIgnored
-                parcial.delete();
-                throw new IOException("o arquivo baixado não confere com o SHA256SUMS da release.");
-            }
+        Matcher m = Pattern.compile("(?m)^([0-9a-fA-F]{64})\\s+\\*?"
+                + Pattern.quote(nomeApk) + "\\s*$").matcher(somas);
+        if (!m.find() || !m.group(1).equalsIgnoreCase(sha)) {
+            //noinspection ResultOfMethodCallIgnored
+            parcial.delete();
+            throw new IOException("o arquivo baixado não confere com o SHA256SUMS da release.");
         }
 
         PackageInfo info = app.getPackageManager().getPackageArchiveInfo(parcial.getPath(), 0);
@@ -221,6 +233,32 @@ final class Atualizador {
                 .apply();
         oferecido = false;
         return null;
+    }
+
+    /** Baixa um arquivo pequeno (somas/assinatura), no maximo 64 KB. */
+    private static byte[] baixarPequeno(OkHttpClient c, String url) throws IOException {
+        try (Response r = c.newCall(new Request.Builder().url(url)
+                .header("User-Agent", "KeepPolicial-App").build()).execute()) {
+            if (!r.isSuccessful()) throw new IOException("Download falhou (" + r.code() + ")");
+            byte[] b = r.body().bytes();
+            if (b.length > 64 * 1024) throw new IOException("Arquivo de verificação grande demais.");
+            return b;
+        }
+    }
+
+    /** SHA256SUMS assinado (openssl dgst -sha256 -sign) com a chave privada das releases. */
+    static boolean assinaturaValida(byte[] dados, byte[] assinatura) {
+        try {
+            java.security.PublicKey chave = java.security.KeyFactory.getInstance("EC").generatePublic(
+                    new java.security.spec.X509EncodedKeySpec(
+                            android.util.Base64.decode(CHAVE_PUBLICA_RELEASE, android.util.Base64.DEFAULT)));
+            java.security.Signature v = java.security.Signature.getInstance("SHA256withECDSA");
+            v.initVerify(chave);
+            v.update(dados);
+            return v.verify(assinatura);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static String baixar(OkHttpClient c, String url, File destino) throws Exception {

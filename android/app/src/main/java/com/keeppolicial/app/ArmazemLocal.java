@@ -110,8 +110,6 @@ final class ArmazemLocal extends SQLiteOpenHelper {
         apagarArquivos("fotos_pend");
         perdaDetectada = true;
         perdidas = pend;
-        Falhas.registrarLocal(app, "Dados locais ilegíveis (" + quantidade + " fichas); "
-                + pend + " envios pendentes perdidos");
     }
 
     boolean perdaDetectada() {
@@ -285,7 +283,6 @@ final class ArmazemLocal extends SQLiteOpenHelper {
     private IOException erroDeBanco(String operacao, android.database.sqlite.SQLiteException e) {
         boolean cheio = e instanceof android.database.sqlite.SQLiteFullException;
         Diag.e("Armazem", "banco local: " + operacao + (cheio ? " (SEM ESPACO)" : ""), e);
-        Falhas.registrarLocal(app, "Banco local falhou em '" + operacao + "': " + e.getClass().getSimpleName());
         return new IOException(cheio
                 ? "O celular está sem espaço livre. Libere espaço e salve de novo."
                 : "Falha no armazenamento do aparelho. Tente de novo; se continuar, avise o suporte.", e);

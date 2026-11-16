@@ -67,7 +67,14 @@ fi
 read -rp "Publicar a release $TAG? (s/N) " OK
 [ "$OK" = "s" ] || exit 0
 if [ -n "$NOTAS" ]; then ARG_NOTAS=(--notes-file "$NOTAS"); else
-    ARG_NOTAS=(--notes "$(git -C "$RAIZ" log -1 --pretty=%B | grep -v '^Co-Authored-By')"); fi
+    # Sem rodapes de autoria/sessao (Co-Authored-By, Claude-Session, links): as notas
+    # aparecem no painel de todos os servidores e na tela de atualizacao dos celulares.
+    ARG_NOTAS=(--notes "$(git -C "$RAIZ" log -1 --pretty=%B \
+        | grep -viE '^(Co-Authored-By|Claude-Session|Signed-off-by):|https?://claude\.ai')"); fi
+# Trava final: nunca publicar notas com link de sessao do Claude.
+if [ -n "$NOTAS" ] && grep -qiE 'claude\.ai/code|Claude-Session' "$NOTAS"; then
+    echo "ERRO: as notas ($NOTAS) contêm link de sessão do Claude. Remova antes de publicar."; exit 1
+fi
 gh release create "$TAG" --repo OpCer71-sketch/keep-policial --title "Keep Policial ${TAG#v}" \
     "${ARG_NOTAS[@]}" \
     "$TMP/KeepPolicial.apk" "$TMP/keep_servidor.py" "$TMP/KeepPolicial-instalacao.zip" "$TMP/SHA256SUMS" "$TMP/SHA256SUMS.sig"

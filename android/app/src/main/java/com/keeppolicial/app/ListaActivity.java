@@ -448,6 +448,7 @@ public class ListaActivity extends BaseActivity {
                 + "\nÚltimo erro de sincronização: "
                 + (Sincronizador.ultimoErro == null ? "nenhum" : Sincronizador.ultimoErro)
                 + "\nOCR offline: " + (LeitorOcr.disponivel() ? "incluído" : "ausente")
+                + "\nRelatos de falha aguardando envio: " + Falhas.pendentes(this)
                 + "\n\n" + Diag.ultimas(80);
         new AlertDialog.Builder(this)
                 .setTitle("Diagnóstico")
