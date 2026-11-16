@@ -2786,6 +2786,60 @@ def cmd_falhas():
     db.close()
 
 
+def cmd_telegram(acao):
+    """Liga/testa/desliga o envio das falhas ao Telegram do desenvolvedor.
+
+    O token e DIGITADO (nao vai na linha de comando, que fica no historico do shell, nem
+    no codigo, que e publico): fica so no config.json deste servidor, com permissao 0600.
+    """
+    preparar_dados()
+    cfg = carregar_config()
+    if acao == "desligar":
+        cfg.pop("telegram_token", None)
+        cfg.pop("telegram_chat", None)
+        salvar_config(cfg)
+        print("Envio ao Telegram desligado e token apagado deste servidor.")
+        return
+    if acao == "testar":
+        try:
+            enviar_telegram("Keep Policial - teste: as falhas do servidor '%s' (versao %s) "
+                            "chegarao aqui." % (cfg.get("nome_destacamento"), VERSAO), cfg)
+            print("Mensagem de teste enviada. Confira o Telegram.")
+        except ValueError as e:
+            sys.exit("Falhou: %s" % e)
+        return
+    if acao == "status":
+        print("Telegram: %s" % ("ligado (chat %s)" % cfg["telegram_chat"]
+                                if telegram_configurado(cfg) else "desligado"))
+        return
+    print("Antes de continuar, mande qualquer mensagem (ex.: oi) para o seu bot no Telegram.")
+    token = getpass.getpass("Cole o token do bot (não aparece na tela): ").strip()
+    if not TOKEN_TELEGRAM.fullmatch(token):
+        sys.exit("Token inválido. Copie o token inteiro que o @BotFather enviou.")
+    try:
+        bot = _telegram_api(token, "getMe")
+        chats = [u.get("message", {}).get("chat", {}).get("id")
+                 for u in (_telegram_api(token, "getUpdates") or [])]
+    except ValueError as e:
+        sys.exit("Não foi possível falar com o Telegram: %s" % e)
+    chats = [c for c in chats if c is not None]
+    if not chats:
+        sys.exit("O bot @%s ainda não recebeu nenhuma mensagem. Mande 'oi' para ele no "
+                 "Telegram e rode o comando de novo." % bot.get("username", "?"))
+    cfg.update(telegram_token=token, telegram_chat=str(chats[-1]))
+    salvar_config(cfg)
+    db = abrir_db()
+    auditar(db, "terminal", "local", "CONFIG_TELEGRAM", "ligado pelo terminal")
+    db.commit()
+    db.close()
+    try:
+        enviar_telegram("Keep Policial - servidor '%s' (versao %s) conectado. As falhas novas "
+                        "chegarao aqui." % (cfg.get("nome_destacamento"), VERSAO), cfg)
+        print("Pronto: bot @%s ligado; mensagem de confirmação enviada." % bot.get("username"))
+    except ValueError as e:
+        print("Configuração salva, mas o teste falhou: %s" % e)
+
+
 def cmd_atualizacao(instalar=False):
     preparar_dados()
     est = verificar_atualizacao(forcar=True)
@@ -2880,6 +2934,9 @@ def main():
                     help="pede a instalação da versão baixada")
 
     sub.add_parser("falhas", help="relatório de falhas para enviar ao suporte")
+    tg = sub.add_parser("telegram", help="envio das falhas ao Telegram do desenvolvedor")
+    tg.add_argument("acao", nargs="?", default="ligar",
+                    choices=["ligar", "testar", "status", "desligar"])
     bk = sub.add_parser("backup", help="gera backup .tar.gz dos dados")
     bk.add_argument("destino", nargs="?")
 
@@ -2912,6 +2969,8 @@ def main():
         cmd_configurar(args.nome, args.porta, args.horas_sessao, args.endereco_publico)
     elif args.cmd == "falhas":
         cmd_falhas()
+    elif args.cmd == "telegram":
+        cmd_telegram(args.acao)
     elif args.cmd == "backup":
         cmd_backup(args.destino)
     elif args.cmd == "atualizacao":
